@@ -36,8 +36,8 @@
 // libodb-mssql version: odb interface version plus the bugfix
 // version.
 //
-#define LIBODB_MSSQL_VERSION     2020000
-#define LIBODB_MSSQL_VERSION_STR "2.2.0"
+#define LIBODB_MSSQL_VERSION     2020100
+#define LIBODB_MSSQL_VERSION_STR "2.2.1"
 
 #include <odb/post.hxx>
 
