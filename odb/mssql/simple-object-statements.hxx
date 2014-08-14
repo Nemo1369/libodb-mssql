@@ -276,9 +276,9 @@ namespace odb
       // Object image.
       //
       image_type&
-      image ()
+      image (std::size_t i = 0)
       {
-        return image_;
+        return image_[i];
       }
 
       // Insert binding.
@@ -323,7 +323,7 @@ namespace odb
       // Object id image and binding.
       //
       id_image_type&
-      id_image () {return id_image_;}
+      id_image (std::size_t i = 0) {return id_image_[i];}
 
       std::size_t
       id_image_version () const {return id_image_version_;}
@@ -355,6 +355,9 @@ namespace odb
               insert_image_binding_,
               object_traits::auto_id,
               object_traits::rowversion,
+              (object_traits::auto_id || object_traits::rowversion
+               ? &id_image_binding_
+               : 0),
               false));
 
         return *persist_;
@@ -479,7 +482,8 @@ namespace odb
       extra_statement_cache_ptr<extra_statement_cache_type, image_type>
       extra_statement_cache_;
 
-      image_type image_;
+      image_type image_[object_traits::batch];
+      SQLUSMALLINT status_[object_traits::batch];
 
       // Select binding.
       //
@@ -508,10 +512,10 @@ namespace odb
       bind update_image_bind_[update_column_count + id_column_count +
                               managed_optimistic_column_count];
 
-      // Id image binding (only used as a parameter). Uses the suffix in
-      // the update bind.
+      // Id image binding (only used as a parameter or in OUTPUT for
+      // auto id and version). Uses the suffix in the update bind.
       //
-      id_image_type id_image_;
+      id_image_type id_image_[object_traits::batch];
       std::size_t id_image_version_;
       binding id_image_binding_;
 

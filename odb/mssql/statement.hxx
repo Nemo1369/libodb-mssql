@@ -11,6 +11,7 @@
 #include <cstddef>  // std::size_t
 
 #include <odb/statement.hxx>
+#include <odb/exceptions.hxx>
 
 #include <odb/mssql/version.hxx>
 #include <odb/mssql/forward.hxx>
@@ -96,7 +97,8 @@ namespace odb
 
     protected:
       void
-      bind_param (bind*, std::size_t count);
+      bind_param (bind*, std::size_t count,
+                  std::size_t skip = 0, SQLUSMALLINT* status = 0);
 
       // Return the actual number of columns bound.
       //
@@ -124,6 +126,10 @@ namespace odb
       std::string text_copy_;
       const char* text_;
       auto_handle<SQL_HANDLE_STMT> stmt_;
+
+      std::size_t param_skip_; // If 0, no batch is used.
+      SQLULEN processed_; // Number of batch rows processed.
+                          // @@ TODO could be local var in execute()? Nop.
     };
 
     class LIBODB_MSSQL_EXPORT select_statement: public statement
@@ -247,7 +253,8 @@ namespace odb
                         bool process_text,
                         binding& param,
                         bool returning_id,
-                        bool returning_version);
+                        bool returning_version,
+                        binding* returning);
 
       insert_statement (connection_type& conn,
                         const char* text,
@@ -255,22 +262,19 @@ namespace odb
                         binding& param,
                         bool returning_id,
                         bool returning_version,
+                        binding* returning,
                         bool copy_text = true);
 
-      // Return true if successful and false if the row is a duplicate.
+      // Return the number of rows (out of n) that were attempted.
+      //
+      std::size_t
+      execute (std::size_t n = 1, multiple_exceptions* = 0);
+
+      // Return true if successful and false if this row is a duplicate.
       // All other errors are reported by throwing exceptions.
       //
       bool
-      execute ();
-
-      unsigned long long
-      id ()
-      {
-        return id_;
-      }
-
-      unsigned long long
-      version ();
+      result (std::size_t i = 0);
 
     private:
       insert_statement (const insert_statement&);
@@ -278,18 +282,21 @@ namespace odb
 
     private:
       void
-      init_result ();
+      init_result (binding&);
+
+      void
+      fetch (SQLRETURN);
 
     private:
       bool returning_id_;
       bool returning_version_;
       bool batch_;
 
-      unsigned long long id_;
-      SQLLEN id_size_ind_;
-
-      unsigned char version_[8];
-      SQLLEN version_size_ind_;
+      multiple_exceptions* mex_;
+      std::size_t n_; // Batch size.
+      std::size_t i_; // Position in result.
+      SQLUSMALLINT* status_; // @@ TODO: move to statement?
+      bool result_;
     };
 
     class LIBODB_MSSQL_EXPORT update_statement: public statement

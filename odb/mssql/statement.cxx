@@ -4,6 +4,7 @@
 
 #include <cstring> // std::strlen, std::strstr
 #include <cassert>
+#include <iostream>
 
 #include <odb/tracer.hxx>
 
@@ -27,7 +28,7 @@ namespace odb
       SQL_BIT,                // bind::bit
       SQL_TINYINT,            // bind::tinyint
       SQL_SMALLINT,           // bind::smallint
-      SQL_INTEGER,            // bind::integer
+      SQL_INTEGER,            // bind::int_
       SQL_BIGINT,             // bind::bigint
 
       SQL_DECIMAL,            // bind::decimal
@@ -62,7 +63,7 @@ namespace odb
       SQL_C_BIT,            // bind::bit
       SQL_C_UTINYINT,       // bind::tinyint
       SQL_C_SSHORT,         // bind::smallint
-      SQL_C_SLONG,          // bind::integer
+      SQL_C_SLONG,          // bind::int_
       SQL_C_SBIGINT,        // bind::bigint
 
       SQL_C_NUMERIC,        // bind::decimal
@@ -88,6 +89,41 @@ namespace odb
 
       SQL_C_GUID,           // bind::uniqueidentifier
       SQL_C_BINARY          // bind::rowversion
+    };
+
+    // Mapping of bind::buffer_type to fixed buffer capacity values.
+    //
+    static const SQLLEN capacity_lookup [bind::last] =
+    {
+      1,                       // bind::bit
+      1,                       // bind::tinyint
+      2,                       // bind::smallint
+      4,                       // bind::int_
+      8,                       // bind::bigint
+
+      sizeof (decimal),        // bind::decimal
+      4,                       // bind::smallmoney
+      8,                       // bind::money
+
+      4,                       // bind::float4
+      8,                       // bind::float8
+
+      0,                       // bind::string
+      0,                       // bind::long_string
+
+      0,                       // bind::nstring
+      0,                       // bind::long_nstring
+
+      0,                       // bind::binary
+      0,                       // bind::long_binary
+
+      sizeof (date),           // bind::date
+      sizeof (time),           // bind::time
+      sizeof (datetime),       // bind::datetime
+      sizeof (datetimeoffset), // bind::datetimeoffset
+
+      16,                      // bind::uniqueidentifier
+      8                        // bind::rowversion
     };
 
     //
@@ -240,9 +276,41 @@ namespace odb
     }
 
     void statement::
-    bind_param (bind* b, size_t n)
+    bind_param (bind* b, size_t n, size_t skip, SQLUSMALLINT* status)
     {
       SQLRETURN r;
+
+      // Setup row-wise batch operation. We set the actual number of
+      // rows in the batch in execute().
+      //
+      param_skip_ = skip;
+
+      if (param_skip_ != 0)
+      {
+        r = SQLSetStmtAttr (stmt_,
+                            SQL_ATTR_PARAM_BIND_TYPE,
+                            (SQLPOINTER) param_skip_,
+                            0);
+
+        if (!SQL_SUCCEEDED (r))
+          translate_error (r, conn_, stmt_);
+
+        r = SQLSetStmtAttr (stmt_,
+                            SQL_ATTR_PARAMS_PROCESSED_PTR,
+                            (SQLPOINTER) &processed_,
+                            0);
+
+        if (!SQL_SUCCEEDED (r))
+          translate_error (r, conn_, stmt_);
+
+        r = SQLSetStmtAttr (stmt_,
+                            SQL_ATTR_PARAM_STATUS_PTR,
+                            (SQLPOINTER) status,
+                            0);
+
+        if (!SQL_SUCCEEDED (r))
+          translate_error (r, conn_, stmt_);
+      }
 
       SQLUSMALLINT i (0);
       for (bind* end (b + n); b != end; ++b)
@@ -289,7 +357,7 @@ namespace odb
         case bind::long_string:
         case bind::long_binary:
           {
-            buf = (SQLPOINTER) b;
+            buf = (SQLPOINTER) b->buffer;
             col_size = b->capacity != 0
               ? (SQLULEN) b->capacity
               : SQL_SS_LENGTH_UNLIMITED;
@@ -297,7 +365,7 @@ namespace odb
           }
         case bind::long_nstring:
           {
-            buf = (SQLPOINTER) b;
+            buf = (SQLPOINTER) b->buffer;
             col_size = b->capacity != 0
               ? (SQLULEN) b->capacity / 2 // In characters, not bytes.
               : SQL_SS_LENGTH_UNLIMITED;
@@ -429,56 +497,10 @@ namespace odb
         if (b->buffer == 0) // Skip NULL entries.
           continue;
 
-        SQLLEN cap (0);
+        SQLLEN cap (capacity_lookup[b->type]);
 
         switch (b->type)
         {
-        case bind::bit:
-        case bind::tinyint:
-          {
-            cap = 1;
-            break;
-          }
-        case bind::smallint:
-          {
-            cap = 2;
-            break;
-          }
-        case bind::int_:
-          {
-            cap = 4;
-            break;
-          }
-        case bind::bigint:
-          {
-            cap = 8;
-            break;
-          }
-        case bind::decimal:
-          {
-            cap = (SQLLEN) sizeof (decimal);
-            break;
-          }
-        case bind::smallmoney:
-          {
-            cap = 4;
-            break;
-          }
-        case bind::money:
-          {
-            cap = 8;
-            break;
-          }
-        case bind::float4:
-          {
-            cap = 4;
-            break;
-          }
-        case bind::float8:
-          {
-            cap = 8;
-            break;
-          }
         case bind::string:
         case bind::nstring:
         case bind::binary:
@@ -495,41 +517,13 @@ namespace odb
             long_count++;
             continue;
           }
-        case bind::date:
-          {
-            cap = (SQLLEN) sizeof (date);
-            break;
-          }
-        case bind::time:
-          {
-            cap = (SQLLEN) sizeof (time);
-            break;
-          }
-        case bind::datetime:
-          {
-            cap = (SQLLEN) sizeof (datetime);
-            break;
-          }
-        case bind::datetimeoffset:
-          {
-            cap = (SQLLEN) sizeof (datetimeoffset);
-            break;
-          }
-        case bind::uniqueidentifier:
-          {
-            cap = 16;
-            break;
-          }
-        case bind::rowversion:
-          {
-            cap = 8;
-            break;
-          }
         case bind::last:
           {
             assert (false);
             break;
           }
+        default:
+          break;
         }
 
         r = SQLBindCol (stmt_,
@@ -557,6 +551,8 @@ namespace odb
           t->execute (conn_, *this);
       }
 
+      processed_ = 0;
+
       SQLRETURN r (SQLExecute (stmt_));
 
       if (r == SQL_NEED_DATA)
@@ -566,10 +562,13 @@ namespace odb
         if (tmp_buf.capacity () == 0)
           tmp_buf.capacity (4096);
 
-        bind* b;
+        long_callback* pcb;
         for (;;)
         {
-          r = SQLParamData (stmt_, (SQLPOINTER*) &b);
+          // ODBC seems to already offset the returned pointer for us
+          // in case of a batch.
+          //
+          r = SQLParamData (stmt_, (SQLPOINTER*) &pcb);
 
           // If we get anything other than SQL_NEED_DATA, then this is
           // the return code of SQLExecute().
@@ -577,12 +576,11 @@ namespace odb
           if (r != SQL_NEED_DATA)
             break;
 
-          long_callback& cb (*static_cast<long_callback*> (b->buffer));
-
           // Store the pointer to the long_callback struct in buf on the
           // first call to the callback. This allows the callback to
           // redirect further calls to some other callback.
           //
+          long_callback cb (*pcb);
           const void* buf (&cb);
 
           size_t position (0);
@@ -670,7 +668,7 @@ namespace odb
           cbp = nb + (p - ob);
         }
 
-        long_callback& cb (*static_cast<long_callback*> (cbp));
+        long_callback cb (*static_cast<long_callback*> (cbp));
 
         // First determine if the value is NULL as well as try to
         // get the total data size.
@@ -907,17 +905,21 @@ namespace odb
                       bool process,
                       binding& param,
                       bool returning_id,
-                      bool returning_version)
+                      bool returning_version,
+                      binding* returning)
         : statement (conn,
                      text, statement_insert,
                      (process ? &param : 0), false),
-          returning_id_ (returning_id),
-          returning_version_ (returning_version)
+          returning_id_ (returning_id), returning_version_ (returning_version),
+          status_ (param.status)
     {
-      bind_param (param.bind, param.count);
+      //@@ Just pass binding already! And use batch size, not skip to
+      // decide if it is batch.
+      //
+      bind_param (param.bind, param.count, param.skip, status_);
 
       if (returning_id_ || returning_version_)
-        init_result ();
+        init_result (*returning);
     }
 
     insert_statement::
@@ -927,22 +929,23 @@ namespace odb
                       binding& param,
                       bool returning_id,
                       bool returning_version,
+                      binding* returning,
                       bool copy_text)
         : statement (conn,
                      text, statement_insert,
                      (process ? &param : 0), false,
                      copy_text),
-          returning_id_ (returning_id),
-          returning_version_ (returning_version)
+          returning_id_ (returning_id), returning_version_ (returning_version),
+          status_ (param.status)
     {
-      bind_param (param.bind, param.count);
+      bind_param (param.bind, param.count, param.skip, status_);
 
       if (returning_id_ || returning_version_)
-        init_result ();
+        init_result (*returning);
     }
 
     void insert_statement::
-    init_result ()
+    init_result (binding& ret)
     {
       // Figure out if we are using the OUTPUT clause or a batch of
       // INSERT and SELECT statements. The latter is used to work
@@ -954,17 +957,19 @@ namespace odb
       batch_ = strstr (text_, "OUTPUT INSERTED.") == 0 &&
         strstr (text_, "output inserted.") == 0;
 
+      SQLRETURN r;
       SQLUSMALLINT col (1);
 
       if (returning_id_)
       {
-        SQLRETURN r (
-          SQLBindCol (stmt_,
-                      col++,
-                      SQL_C_SBIGINT,
-                      (SQLPOINTER) &id_,
-                      sizeof (id_),
-                      &id_size_ind_));
+        bind& b (ret.bind[0]); // Auto id is the first element.
+
+        r = SQLBindCol (stmt_,
+                        col++,
+                        c_type_lookup[b.type],
+                        (SQLPOINTER) b.buffer,
+                        capacity_lookup[b.type],
+                        b.size_ind);
 
         if (!SQL_SUCCEEDED (r))
           translate_error (r, conn_, stmt_);
@@ -972,82 +977,224 @@ namespace odb
 
       if (returning_version_)
       {
-        SQLRETURN r (
-          SQLBindCol (stmt_,
-                      col++,
-                      SQL_C_BINARY,
-                      (SQLPOINTER) &version_,
-                      sizeof (version_),
-                      &version_size_ind_));
+        bind& b (ret.bind[ret.count - 1]); // Version is the last element.
+
+        r = SQLBindCol (stmt_,
+                        col++,
+                        c_type_lookup[b.type],
+                        (SQLPOINTER) b.buffer,
+                        capacity_lookup[b.type],
+                        b.size_ind);
 
         if (!SQL_SUCCEEDED (r))
           translate_error (r, conn_, stmt_);
       }
+
+      // It might seem logical to set up the array of results if this is a
+      // batch (i.e., the SQL_ATTR_ROW_BIND_TYPE, SQL_ATTR_ROW_ARRAY_SIZE).
+      // This won't work because what we are getting is multiple result
+      // sets (each containing a single row) and not multiple rows. As a
+      // result, the SQL Server ODBC driver will always store the data in
+      // the first element of our array. A bit counter-intuitive.
     }
 
-    bool insert_statement::
-    execute ()
+    size_t insert_statement::
+    execute (size_t n, multiple_exceptions* mex)
     {
+      mex_ = mex;
+
+      //@@ TODO Should move to statement, also don't call if no batch (will
+      //   need a flag).
+      //
+      {
+        SQLRETURN r (SQLSetStmtAttr (stmt_,
+                                     SQL_ATTR_PARAMSET_SIZE,
+                                     (SQLPOINTER) n,
+                                     0));
+
+        if (!SQL_SUCCEEDED (r))
+          translate_error (r, conn_, stmt_);
+
+        // Some SQL* functions would only update the status in case of
+        // an error.
+        //
+        memset (status_, 0, sizeof (status_[0]) * n);
+      }
+
       SQLRETURN r (statement::execute ());
+
+      // The batch INSERT works in two different ways, depending on
+      // whether we have the OUTPUT clause. If there is no OUTPUT,
+      // then all the rows are processed inside the SQLExecute()
+      // call. If, however, there is OUTPUT, then the rows are
+      // processed one at a time as we consume the results with
+      // the SQLMoreResults() call below. Thus we in effect have
+      // two counts: the "processed so far" as set by the API
+      // (SQL_ATTR_PARAMS_PROCESSED_PTR) and the "to be processed"
+      // (value in n_). Note that in the OUTPUT case if there is an
+      // error, the processed count seems to jump by 2 for some reason.
+      //
+      // If the statement failed as a whole, assume only the first row
+      // was attempted (and failed). Otherwise, the documentation says
+      // that the native client driver keeps processing remaining rows
+      // even in case of an error.
+      //
+      i_ = 0;
+      n_ = (SQL_SUCCEEDED (r) ? n : 1);
+
+      if (mex_ != 0)
+      {
+        mex_->current (i_);
+        mex_->attempted (processed_);
+      }
 
       if (!SQL_SUCCEEDED (r))
       {
-        // Translate the integrity contraint violation (SQLSTATE 23000)
-        // to the flase return value. This code is similar to that found
-        // in translate_error().
+        if (mex_ != 0)
+          mex_->fatal (true); // An incomplete batch is always fatal.
+
+        fetch (r);
+        return n_;
+      }
+
+      cerr << "processed: " << processed_ << endl;
+
+      for (unsigned i (0); i != processed_; ++i)
+      {
+        cerr << "[" << i << "] " << status_[i] << " ";
+
+        if (status_[i] == SQL_PARAM_ERROR)
+          cerr << "error ";
+        else if (status_[i] == SQL_PARAM_SUCCESS ||
+                 status_[i] == SQL_PARAM_SUCCESS_WITH_INFO)
+          cerr << "ok";
+        else if (status_[i] == SQL_PARAM_UNUSED)
+          cerr << "unused";
+        else if (status_[i] == SQL_PARAM_DIAG_UNAVAILABLE)
+          cerr << "unavailable";
+        else
+          cerr << "?";
+
+        cerr << endl;
+      }
+
+      if (n == 1) // Note: not n_!
+        fetch (SQL_SUCCESS); // Non-batch case.
+      else
+        fetch (status_[i_] == SQL_PARAM_SUCCESS ||
+               status_[i_] == SQL_PARAM_SUCCESS_WITH_INFO
+               ? SQL_SUCCESS : SQL_ERROR);
+
+      return n_;
+    }
+
+    void insert_statement::
+    fetch (SQLRETURN r)
+    {
+      result_ = true;
+
+      if (!SQL_SUCCEEDED (r))
+      {
+        // An auto-assigned object id should never cause a duplicate primary
+        // key.
         //
-        char sqlstate[SQL_SQLSTATE_SIZE + 1];
-        SQLINTEGER native_code;
-        SQLSMALLINT msg_size;
-
-        bool cv (false);
-
-        for (SQLSMALLINT i (1);; ++i)
+        if (!returning_id_)
         {
-          SQLRETURN r (SQLGetDiagRecA (SQL_HANDLE_STMT,
-                                       stmt_,
-                                       i,
-                                       (SQLCHAR*) sqlstate,
-                                       &native_code,
-                                       0,
-                                       0,
-                                       &msg_size));
+          // Translate the integrity contraint violation (SQLSTATE 23000)
+          // to the false result value. This code is similar to that found
+          // in translate_error().
+          //
+          char sqlstate[SQL_SQLSTATE_SIZE + 1];
+          SQLINTEGER native_code;
+          SQLSMALLINT msg_size;
 
-          if (r == SQL_NO_DATA)
-            break;
-          else if (SQL_SUCCEEDED (r))
+          bool cv (false);
+
+          for (SQLSMALLINT i (1);; ++i)
           {
-            string s (sqlstate);
+            SQLRETURN r;
 
-            if (s == "23000")      // Integrity contraint violation.
-              cv = true;
-            else if (s != "01000") // General warning.
+            // Filter based on row association.
+            //
+            if (mex_ != 0)
             {
-              // Some other code.
-              //
+              SQLLEN n;
+              r = SQLGetDiagField (SQL_HANDLE_STMT,
+                                   stmt_,
+                                   i,
+                                   SQL_DIAG_ROW_NUMBER,
+                                   &n,
+                                   0,
+                                   0);
+
+              if (r == SQL_NO_DATA)
+                break;
+              else if (!SQL_SUCCEEDED (r))
+                continue;
+
+              // check error
+              if (n == SQL_NO_ROW_NUMBER)
+                cerr << "not associated with any row" << endl;
+              else if (n == SQL_ROW_NUMBER_UNKNOWN)
+                cerr << "unable to determine row association" << endl;
+              else
+                cerr << "associated with " << n << endl;
+
+              if (n == SQL_NO_ROW_NUMBER ||
+                  n == SQL_ROW_NUMBER_UNKNOWN ||
+                  n != static_cast<SQLLEN> (i_ + 1)) // 1-based
+                continue;
+            }
+
+            r= SQLGetDiagRecA (SQL_HANDLE_STMT,
+                               stmt_,
+                               i,
+                               (SQLCHAR*) sqlstate,
+                               &native_code,
+                               0,
+                               0,
+                               &msg_size);
+
+            if (r == SQL_NO_DATA)
+              break;
+            else if (SQL_SUCCEEDED (r))
+            {
+              string s (sqlstate);
+
+              cerr << s << endl;
+
+              if (s == "23000")      // Integrity contraint violation.
+                cv = true;
+              else if (s != "01000") // General warning.
+              {
+                // Some other code.
+                //
+                cv = false;
+                break;
+              }
+            }
+            else // SQLGetDiagRec() failure.
+            {
               cv = false;
               break;
             }
           }
-          else
-          {
-            // SQLGetDiagRec() failure.
-            //
-            cv = false;
-            break;
-          }
+
+          if (cv)
+            result_ = false;
         }
 
-        if (cv)
-          return false;
-        else
-          translate_error (r, conn_, stmt_);
+        if (result_)
+        {
+          translate_error (r, conn_, stmt_, i_, mex_); // Can return.
+          result_ = false; // Prevent id/version extraction below.
+        }
       }
 
-      // Fetch the row containing the id/version if this statement is
+      // Fetch the row containing the id/version if this statement if
       // returning.
       //
-      if (returning_id_ || returning_version_)
+      if (result_ && (returning_id_ || returning_version_))
       {
         if (batch_)
         {
@@ -1069,12 +1216,7 @@ namespace odb
         if (r != SQL_NO_DATA && !SQL_SUCCEEDED (r))
           translate_error (r, conn_, stmt_);
 
-        {
-          SQLRETURN r (SQLCloseCursor (stmt_)); // Don't overwrite r.
-
-          if (!SQL_SUCCEEDED (r))
-            translate_error (r, conn_, stmt_);
-        }
+        cerr << "fetch [" << i_ << "] " << status_[i_] << " " << endl;
 
         if (r == SQL_NO_DATA)
           throw database_exception (
@@ -1082,8 +1224,64 @@ namespace odb
             "?????",
             "result set expected from a statement with the OUTPUT clause");
       }
+    }
 
-      return true;
+    bool insert_statement::
+    result (size_t i)
+    {
+      assert ((i_ == i || i_ + 1 == i) && i < n_);
+
+      SQLRETURN r;
+
+      // Get to the next result set if necessary.
+      //
+      if (i != i_)
+      {
+        // Only in case of the OUTPUT clause do we have multiple result sets.
+        //
+        if (returning_id_ || returning_version_)
+        {
+          r = SQLMoreResults (stmt_);
+
+          cerr << "more [" << (i_ + 1) << "] " << status_[i_ + 1] << " "
+               << SQL_SUCCEEDED (r) << endl;
+
+          cerr << "more processed: " << processed_ << endl;
+
+          if (r == SQL_NO_DATA)
+          {
+            throw database_exception (
+              0,
+              "?????",
+              "multiple result sets expected from an array of parameters");
+          }
+
+          // The actually processed count could have changed (see execute()).
+          // Multiple exceptions cannot be NULL since this is a batch.
+          //
+          mex_->attempted (processed_);
+        }
+
+        mex_->current (++i_);
+
+        fetch (status_[i_] == SQL_PARAM_SUCCESS ||
+               status_[i_] == SQL_PARAM_SUCCESS_WITH_INFO
+               ? SQL_SUCCESS : SQL_ERROR);
+      }
+
+      // Close the cursor if we are done.
+      //
+      if ((returning_id_ || returning_version_) && i_ + 1 == n_)
+      {
+        r = SQLCloseCursor (stmt_);
+
+        if (!SQL_SUCCEEDED (r))
+          translate_error (r, conn_, stmt_);
+      }
+
+      //cerr << "result for " << i << " " << result_;
+
+      return result_;
     }
 
     //
