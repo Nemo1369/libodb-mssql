@@ -55,7 +55,7 @@ namespace odb
                              id_column_count,
                              object_traits::batch,
                              sizeof (id_image_type),
-                             0),
+                             status_),
           od_ (update_image_bind_ + update_column_count)
     {
       image_[0].version = 0; // @@ TODO [0]

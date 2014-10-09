@@ -97,8 +97,7 @@ namespace odb
 
     protected:
       void
-      bind_param (bind*, std::size_t count,
-                  std::size_t skip = 0, SQLUSMALLINT* status = 0);
+      bind_param (bind*, std::size_t count);
 
       // Return the actual number of columns bound.
       //
@@ -126,10 +125,46 @@ namespace odb
       std::string text_copy_;
       const char* text_;
       auto_handle<SQL_HANDLE_STMT> stmt_;
+    };
 
-      std::size_t param_skip_; // If 0, no batch is used.
-      SQLULEN processed_; // Number of batch rows processed.
-                          // @@ TODO could be local var in execute()? Nop.
+    class LIBODB_MSSQL_EXPORT bulk_statement: public statement
+    {
+    public:
+      virtual
+      ~bulk_statement () = 0;
+
+      bulk_statement (connection_type&,
+                      const std::string& text,
+                      statement_kind,
+                      const binding* process,
+                      bool optimize,
+                      std::size_t batch,
+                      std::size_t skip,
+                      SQLUSMALLINT* status);
+
+      bulk_statement (connection_type&,
+                      const char* text,
+                      statement_kind,
+                      const binding* process,
+                      bool optimize,
+                      std::size_t batch,
+                      std::size_t skip,
+                      SQLUSMALLINT* status,
+                      bool copy_text);
+
+      SQLRETURN
+      execute (std::size_t n, multiple_exceptions*);
+
+    private:
+      void
+      init (std::size_t skip);
+
+    protected:
+      SQLULEN processed_;    // Number of batch rows processed so far.
+      SQLUSMALLINT* status_; // Row status array.
+      std::size_t n_;        // Actual batch size.
+      std::size_t i_;        // Position in result.
+      multiple_exceptions* mex_;
     };
 
     class LIBODB_MSSQL_EXPORT select_statement: public statement
@@ -242,7 +277,7 @@ namespace odb
       select_statement* s_;
     };
 
-    class LIBODB_MSSQL_EXPORT insert_statement: public statement
+    class LIBODB_MSSQL_EXPORT insert_statement: public bulk_statement
     {
     public:
       virtual
@@ -290,12 +325,8 @@ namespace odb
     private:
       bool returning_id_;
       bool returning_version_;
-      bool batch_;
+      bool text_batch_;
 
-      multiple_exceptions* mex_;
-      std::size_t n_; // Batch size.
-      std::size_t i_; // Position in result.
-      SQLUSMALLINT* status_; // @@ TODO: move to statement?
       bool result_;
     };
 
@@ -339,7 +370,7 @@ namespace odb
       SQLLEN version_size_ind_;
     };
 
-    class LIBODB_MSSQL_EXPORT delete_statement: public statement
+    class LIBODB_MSSQL_EXPORT delete_statement: public bulk_statement
     {
     public:
       virtual
@@ -354,12 +385,27 @@ namespace odb
                         binding& param,
                         bool copy_text = true);
 
+      // Return the number of parameter rows (out of n) that were attempted.
+      //
+      std::size_t
+      execute (std::size_t n = 1, multiple_exceptions* = 0);
+
+      // Return the number of rows affected (deleted) by the parameter
+      // row. Errors are reported by throwing exceptions.
+      //
       unsigned long long
-      execute ();
+      result (std::size_t i = 0);
 
     private:
       delete_statement (const delete_statement&);
       delete_statement& operator= (const delete_statement&);
+
+    private:
+      void
+      fetch (SQLRETURN);
+
+    private:
+      unsigned long long result_;
     };
   }
 }
