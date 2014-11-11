@@ -728,7 +728,7 @@ namespace odb
     init (size_t skip)
     {
       // Setup row-wise batch operation. We set the actual number of
-      // rows in the batch in execute().
+      // parameter sets in the batch in execute().
       //
       SQLRETURN r;
 
@@ -780,14 +780,15 @@ namespace odb
 
       processed_ = 0;
       SQLRETURN r (statement::execute ());
+      bool ok (SQL_SUCCEEDED (r) || r == SQL_NO_DATA);
 
-      // If the statement failed as a whole, assume only the first row
-      // was attempted (and failed). Otherwise, the documentation says
-      // that the native client driver keeps processing remaining rows
-      // even in case of an error.
+      // If the statement failed as a whole, assume no parameter sets
+      // were attempted. Otherwise, the documentation says that the
+      // native client driver keeps processing remaining sets even
+      // in case of an error.
       //
       i_ = 0;
-      n_ = (SQL_SUCCEEDED (r) ? n : 1);
+      n_ = (ok ? n : 0);
 
       if (mex_ != 0)
       {
@@ -795,7 +796,7 @@ namespace odb
         mex_->attempted (processed_);
       }
 
-      if (!SQL_SUCCEEDED (r))
+      if (!ok)
       {
         if (mex_ != 0)
           mex_->fatal (true); // An incomplete batch is always fatal.
@@ -1074,9 +1075,9 @@ namespace odb
     execute (size_t n, multiple_exceptions* mex)
     {
       // The batch INSERT works in two different ways, depending on
-      // whether we have the OUTPUT clause. If there is no OUTPUT,
-      // then all the rows are processed inside the SQLExecute()
-      // call. If, however, there is OUTPUT, then the rows are
+      // whether we have the OUTPUT clause. If there is no OUTPUT, then
+      // all the parameter sets are processed inside the SQLExecute()
+      // call. If, however, there is OUTPUT, then the sets are
       // processed one at a time as we consume the results with
       // the SQLMoreResults() call below. Thus we in effect have
       // two counts: the "processed so far" as set by the API
@@ -1086,7 +1087,8 @@ namespace odb
       //
       SQLRETURN r (bulk_statement::execute (n, mex));
 
-      // Statement failed as a whole, assume only one row was attempted.
+      // Statement failed as a whole, assume no parameter sets were
+      // attempted.
       //
       if (!SQL_SUCCEEDED (r))
       {
@@ -1094,7 +1096,7 @@ namespace odb
         return n_;
       }
 
-      if (n == 1) // Note: not n_!
+      if (n == 1) // Note: not n_; n and n_ not be the same, see command above.
         fetch (SQL_SUCCESS); // Non-batch case.
       else
         fetch (status_[i_] == SQL_PARAM_SUCCESS ||
@@ -1253,9 +1255,7 @@ namespace odb
       //
       if (i != i_)
       {
-        // Multiple exceptions cannot be NULL since this is a batch.
-        //
-        mex_->current (++i_);
+        mex_->current (++i_); // mex cannot be NULL since this is a batch.
 
         // Only in case of the OUTPUT clause do we have multiple result sets.
         //
@@ -1428,11 +1428,13 @@ namespace odb
     delete_statement::
     delete_statement (connection_type& conn,
                       const string& text,
-                      binding& param)
+                      binding& param,
+                      bool unique)
         : bulk_statement (conn,
                           text, statement_delete,
                           0, false,
-                          param.batch, param.skip, param.status)
+                          param.batch, param.skip, param.status),
+          unique_ (unique)
     {
       bind_param (param.bind, param.count);
     }
@@ -1441,12 +1443,14 @@ namespace odb
     delete_statement (connection_type& conn,
                       const char* text,
                       binding& param,
+                      bool unique,
                       bool copy_text)
         : bulk_statement (conn,
                           text, statement_delete,
                           0, false,
                           param.batch, param.skip, param.status,
-                          copy_text)
+                          copy_text),
+          unique_ (unique)
     {
       bind_param (param.bind, param.count);
     }
@@ -1454,33 +1458,70 @@ namespace odb
     size_t delete_statement::
     execute (size_t n, multiple_exceptions* mex)
     {
-      /*
-        @@ ??
-
-      // The batch INSERT works in two different ways, depending on
-      // whether we have the OUTPUT clause. If there is no OUTPUT,
-      // then all the rows are processed inside the SQLExecute()
-      // call. If, however, there is OUTPUT, then the rows are
-      // processed one at a time as we consume the results with
-      // the SQLMoreResults() call below. Thus we in effect have
-      // two counts: the "processed so far" as set by the API
-      // (SQL_ATTR_PARAMS_PROCESSED_PTR) and the "to be processed"
-      // (value in n_). Note that in the OUTPUT case if there is an
-      // error, the processed count seems to jump by 2 for some reason.
+      // In batch DELETE without the OUTPUT clause (which is the
+      // only kind we currently support) all the parameter sets
+      // are processed inside SQLExecute() and the total count of
+      // affected rows is available after it returns.
       //
-      */
 
       SQLRETURN r (bulk_statement::execute (n, mex));
 
-      // Statement failed as a whole, assume only one row was attempted.
+      // Statement failed as a whole, assume no parameter sets were
+      // attempted.
       //
-      if (!SQL_SUCCEEDED (r))
+      if (!(SQL_SUCCEEDED (r) || r == SQL_NO_DATA))
       {
         fetch (r);
         return n_;
       }
 
-      if (n == 1) // Note: not n_!
+      // Figure out the affected row count. SQL_NO_DATA indicates that
+      // the statement hasn't affected any rows.
+      //
+      if (r == SQL_NO_DATA)
+        result_ = 0;
+      else
+      {
+        SQLLEN rows;
+        r = SQLRowCount (stmt_, &rows);
+
+        if (!SQL_SUCCEEDED (r))
+          translate_error (r, conn_, stmt_);
+
+        result_ = static_cast<unsigned long long> (rows);
+      }
+
+      cerr << "total: " << result_ << endl;
+
+      if (n_ > 1) // Batch.
+      {
+        if (result_ != 0) // Some rows did get affected.
+        {
+          size_t p (n_);
+
+          // Subtract the parameter sets that failed since they haven't
+          // affected any rows.
+          //
+          for (size_t i (0); i != n_; ++i)
+            if (status_[i] != SQL_PARAM_SUCCESS &&
+                status_[i] != SQL_PARAM_SUCCESS_WITH_INFO)
+              p--;
+
+          if (p > 1) // True batch.
+          {
+            if (unique_) // Each can affect 0 or 1 row.
+            {
+              result_ = (p == static_cast<size_t> (result_)
+                         ? 1
+                         : result_unknown);
+            }
+            else
+              result_ = result_unknown;
+          }
+        }
+      }
+
+      if (n == 1) // n and n_ are really the same here.
         fetch (SQL_SUCCESS); // Non-batch case.
       else
         fetch (status_[i_] == SQL_PARAM_SUCCESS ||
@@ -1493,31 +1534,7 @@ namespace odb
     void delete_statement::
     fetch (SQLRETURN r)
     {
-      /*
-        @@
-
-      // SQL_NO_DATA indicates that the statement hasn't affected any rows.
-      //
-      if (r == SQL_NO_DATA)
-        return 0;
-
-      */
-
-      if (SQL_SUCCEEDED (r))
-      {
-        // Get the number of affected rows.
-        //
-        SQLLEN rows;
-        r = SQLRowCount (stmt_, &rows);
-
-        if (!SQL_SUCCEEDED (r))
-          translate_error (r, conn_, stmt_);
-
-        cerr << "fetch: " << rows << endl;
-
-        result_ = static_cast<unsigned long long> (rows);
-      }
-      else
+      if (!SQL_SUCCEEDED (r))
         translate_error (r, conn_, stmt_, i_, mex_); // Can return.
     }
 
@@ -1526,34 +1543,9 @@ namespace odb
     {
       assert ((i_ == i || i_ + 1 == i) && i < n_);
 
-      SQLRETURN r;
-
-      // Get to the next result set if necessary.
-      //
       if (i != i_)
       {
-        // Multiple exceptions cannot be NULL since this is a batch.
-        //
-        mex_->current (++i_);
-
-        r = SQLMoreResults (stmt_);
-
-        // The actually processed count could have changed (see execute()).
-        //
-        mex_->attempted (processed_);
-
-        cerr << "more [" << (i_) << "] " << status_[i_] << " "
-             << SQL_SUCCEEDED (r) << " " << (r == SQL_NO_DATA) << endl;
-
-        cerr << "more processed: " << processed_ << endl;
-
-        if (r == SQL_NO_DATA)
-        {
-          throw database_exception (
-            0,
-            "?????",
-            "multiple result sets expected from an array of parameters");
-        }
+        mex_->current (++i_); // mex cannot be NULL since this is a batch.
 
         fetch (status_[i_] == SQL_PARAM_SUCCESS ||
                status_[i_] == SQL_PARAM_SUCCESS_WITH_INFO
@@ -1562,31 +1554,5 @@ namespace odb
 
       return result_;
     }
-
-    /*
-    unsigned long long delete_statement::
-    execute ()
-    {
-      SQLRETURN r (statement::execute ());
-
-      // SQL_NO_DATA indicates that the statement hasn't affected any rows.
-      //
-      if (r == SQL_NO_DATA)
-        return 0;
-
-      if (!SQL_SUCCEEDED (r))
-        translate_error (r, conn_, stmt_);
-
-      // Get the number of affected rows.
-      //
-      SQLLEN rows;
-      r = SQLRowCount (stmt_, &rows);
-
-      if (!SQL_SUCCEEDED (r))
-        translate_error (r, conn_, stmt_);
-
-      return static_cast<unsigned long long> (rows);
-    }
-    */
   }
 }

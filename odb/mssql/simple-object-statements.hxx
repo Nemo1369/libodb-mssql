@@ -405,6 +405,7 @@ namespace odb
               conn_,
               object_traits::erase_statement,
               id_image_binding_,
+              true, // Unique (0 or 1 affected rows).
               false));
 
         return *erase_;
@@ -420,6 +421,7 @@ namespace odb
               conn_,
               object_traits::optimistic_erase_statement,
               od_.id_image_binding_,
+              true, // Unique (0 or 1 affected rows).
               false));
         }
 

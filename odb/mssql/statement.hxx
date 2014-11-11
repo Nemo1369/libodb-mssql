@@ -152,6 +152,11 @@ namespace odb
                       SQLUSMALLINT* status,
                       bool copy_text);
 
+      // Call SQLExecute() and set up the batch tracking variables (see
+      // below). Note that this function does not treat SQL_NO_DATA as
+      // an error since for DELETE and UPDATE statements this is a
+      // shortcut notation for zero rows affected.
+      //
       SQLRETURN
       execute (std::size_t n, multiple_exceptions*);
 
@@ -300,7 +305,7 @@ namespace odb
                         binding* returning,
                         bool copy_text = true);
 
-      // Return the number of rows (out of n) that were attempted.
+      // Return the number of parameter sets (out of n) that were attempted.
       //
       std::size_t
       execute (std::size_t n = 1, multiple_exceptions* = 0);
@@ -376,23 +381,47 @@ namespace odb
       virtual
       ~delete_statement ();
 
+      // SQL Server native client ODBC driver does not expose individual
+      // affected row counts for batch operations, even though it says it
+      // does (SQLGetInfo(SQL_PARAM_ARRAY_ROW_COUNTS) returns SQL_PARC_BATCH).
+      // Instead, it adds them all up and returns a single count. This is
+      // bad news for us.
+      //
+      // In case of deleting by primary key (the affected row count is
+      // either 1 or 0), we can recognize the presumably successful case
+      // where the total affected row count is equal to the batch size
+      // (we can also recognize the "all unsuccessful" case where the
+      // total affected row count is 0). The unique_hint argument in the
+      // constructors below indicates whether this is a "0 or 1" DELETE
+      // statement.
+      //
+      // In all other situations (provided this is a batch), the result()
+      // function below returns the special result_unknown value.
+      //
       delete_statement (connection_type& conn,
                         const std::string& text,
-                        binding& param);
+                        binding& param,
+                        bool unique_hint = false);
 
       delete_statement (connection_type& conn,
                         const char* text,
                         binding& param,
+                        bool unique_hint = false,
                         bool copy_text = true);
 
-      // Return the number of parameter rows (out of n) that were attempted.
+      // Return the number of parameter sets (out of n) that were attempted.
       //
       std::size_t
       execute (std::size_t n = 1, multiple_exceptions* = 0);
 
       // Return the number of rows affected (deleted) by the parameter
-      // row. Errors are reported by throwing exceptions.
+      // set. If this is a batch (n > 1 in execute() call above) and it
+      // is impossible to determine the affected row count for each
+      // parameter set, then this function returns result_unknown. All
+      // other errors are reported by throwing exceptions.
       //
+      static const unsigned long long result_unknown = ~0ULL;
+
       unsigned long long
       result (std::size_t i = 0);
 
@@ -405,6 +434,7 @@ namespace odb
       fetch (SQLRETURN);
 
     private:
+      bool unique_;
       unsigned long long result_;
     };
   }
