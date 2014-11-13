@@ -133,6 +133,7 @@ namespace odb
       virtual
       ~bulk_statement () = 0;
 
+    protected:
       bulk_statement (connection_type&,
                       const std::string& text,
                       statement_kind,
@@ -160,13 +161,23 @@ namespace odb
       SQLRETURN
       execute (std::size_t n, multiple_exceptions*);
 
+      // Return the number of failed parameter sets.
+      //
+      std::size_t
+      extract_errors ();
+
+      static const unsigned long long result_unknown = ~0ULL;
+
+      unsigned long long
+      affected (SQLRETURN, std::size_t errors, bool unique);
+
     private:
       void
       init (std::size_t skip);
 
     protected:
-      SQLULEN processed_;    // Number of batch rows processed so far.
-      SQLUSMALLINT* status_; // Row status array.
+      SQLULEN processed_;    // Number of parameter sets processed so far.
+      SQLUSMALLINT* status_; // Parameter sets status array.
       std::size_t n_;        // Actual batch size.
       std::size_t i_;        // Position in result.
       multiple_exceptions* mex_;
@@ -335,28 +346,63 @@ namespace odb
       bool result_;
     };
 
-    class LIBODB_MSSQL_EXPORT update_statement: public statement
+    class LIBODB_MSSQL_EXPORT update_statement: public bulk_statement
     {
     public:
       virtual
       ~update_statement ();
 
+      // SQL Server native client ODBC driver does not expose individual
+      // affected row counts for batch operations, even though it says it
+      // does (SQLGetInfo(SQL_PARAM_ARRAY_ROW_COUNTS) returns SQL_PARC_BATCH).
+      // Instead, it adds them all up and returns a single count. This is
+      // bad news for us.
+      //
+      // In case of updating by primary key (the affected row count is
+      // either 1 or 0), we can recognize the presumably successful case
+      // where the total affected row count is equal to the batch size
+      // (we can also recognize the "all unsuccessful" case where the
+      // total affected row count is 0). The unique_hint argument in the
+      // constructors below indicates whether this is a "0 or 1" UPDATE
+      // statement.
+      //
+      // In all other situations (provided this is a batch), the result()
+      // function below returns the special result_unknown value.
+      //
       update_statement (connection_type& conn,
                         const std::string& text,
+                        bool unique_hint,
                         bool process,
                         binding& param,
                         bool returning_version);
 
       update_statement (connection_type& conn,
                         const char* text,
+                        bool unique_hint,
                         bool process,
                         binding& param,
                         bool returning_version,
                         bool copy_text = true);
 
-      unsigned long long
-      execute ();
+      // Return the number of parameter sets (out of n) that were attempted.
+      //
+      std::size_t
+      execute (std::size_t n = 1, multiple_exceptions* = 0);
 
+      // Return the number of rows affected (deleted) by the parameter
+      // set. If this is a batch (n > 1 in execute() call above) and it
+      // is impossible to determine the affected row count for each
+      // parameter set, then this function returns result_unknown. All
+      // other errors are reported by throwing exceptions.
+      //
+      using bulk_statement::result_unknown;
+
+      unsigned long long
+      result (std::size_t i = 0);
+
+      // Note that currently the implementation does not support batch
+      // with the OUTPUT clause.
+      //
       unsigned long long
       version ();
 
@@ -369,7 +415,10 @@ namespace odb
       init_result ();
 
     private:
+      bool unique_;
       bool returning_version_;
+
+      unsigned long long result_;
 
       unsigned char version_[8];
       SQLLEN version_size_ind_;
@@ -420,7 +469,7 @@ namespace odb
       // parameter set, then this function returns result_unknown. All
       // other errors are reported by throwing exceptions.
       //
-      static const unsigned long long result_unknown = ~0ULL;
+      using bulk_statement::result_unknown;
 
       unsigned long long
       result (std::size_t i = 0);
@@ -428,10 +477,6 @@ namespace odb
     private:
       delete_statement (const delete_statement&);
       delete_statement& operator= (const delete_statement&);
-
-    private:
-      void
-      fetch (SQLRETURN);
 
     private:
       bool unique_;

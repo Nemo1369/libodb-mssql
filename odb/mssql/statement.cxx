@@ -783,12 +783,12 @@ namespace odb
       bool ok (SQL_SUCCEEDED (r) || r == SQL_NO_DATA);
 
       // If the statement failed as a whole, assume no parameter sets
-      // were attempted. Otherwise, the documentation says that the
-      // native client driver keeps processing remaining sets even
-      // in case of an error.
+      // were attempted in case of a batch. Otherwise, the documentation
+      // says that the native client driver keeps processing remaining
+      // sets even in case of an error.
       //
       i_ = 0;
-      n_ = (ok ? n : 0);
+      n_ = (ok ? n : (status_ == 0 ? 1 : 0));
 
       if (mex_ != 0)
       {
@@ -826,6 +826,73 @@ namespace odb
       }
 
       return r;
+    }
+
+    size_t bulk_statement::
+    extract_errors ()
+    {
+      size_t e (0);
+
+      for (size_t i (0); i != n_; ++i)
+      {
+        if (status_[i] != SQL_PARAM_SUCCESS &&
+            status_[i] != SQL_PARAM_SUCCESS_WITH_INFO)
+        {
+          translate_error (SQL_ERROR, conn_, stmt_, i, mex_);
+          e++;
+        }
+      }
+
+      return e;
+    }
+
+    unsigned long long bulk_statement::
+    affected (SQLRETURN r, size_t errors, bool unique)
+    {
+      unsigned long long rows (0);
+
+      // SQL_NO_DATA indicates that the statement hasn't affected any rows.
+      //
+      if (r != SQL_NO_DATA)
+      {
+        SQLLEN n;
+        r = SQLRowCount (stmt_, &n);
+
+        if (!SQL_SUCCEEDED (r))
+          translate_error (r, conn_, stmt_);
+
+        // If all the parameter sets failed, then the returned count is -1,
+        // which means "not available" according to the documentation.
+        //
+        rows = (n != -1 ? static_cast<unsigned long long> (n) : 0);
+      }
+
+      cerr << "total: " << rows << endl;
+
+      if (n_ > 1) // Batch.
+      {
+        if (rows != 0) // Some rows did get affected.
+        {
+          // Subtract the parameter sets that failed since they haven't
+          // affected any rows.
+          //
+          size_t p (n_ - errors);
+
+          if (p > 1) // True batch.
+          {
+            if (unique) // Each can affect 0 or 1 row.
+            {
+              rows = (p == static_cast<size_t> (rows)
+                      ? 1
+                      : result_unknown);
+            }
+            else
+              rows = result_unknown;
+          }
+        }
+      }
+
+      return rows;
     }
 
     //
@@ -1085,10 +1152,29 @@ namespace odb
       // (value in n_). Note that in the OUTPUT case if there is an
       // error, the processed count seems to jump by 2 for some reason.
       //
+      // The OUTPUT case can be handled in two different ways: we can
+      // "execute" (with SQLMoreResults()) each set as the user moves
+      // from one result to the next (result() call). The advantage of
+      // this approach is that the returned data ends up in the right
+      // place automatically. The potential drawback is that the total
+      // affected row count will only be available at the end. As a
+      // result, this approach probably won't work if we need to handle,
+      // say, UPDATE with OUTPUT (SQLRowCount() does not return an
+      // intermediate total, at least not for INSERT).
+      //
+      // The alternative implementation would call SQLMoreResults()
+      // inside execute() until all the parameter sets are executed.
+      // In this case we will have to copy the extracted data into
+      // the right place in the bindings (or update the binding before
+      // each call to SQLMoreResults()). It is also not clear whether
+      // the diagnostic records for the failed sets would accumulate.
+      // If not, those will have to be stashed into mex on each
+      // iteration.
+      //
       SQLRETURN r (bulk_statement::execute (n, mex));
 
       // Statement failed as a whole, assume no parameter sets were
-      // attempted.
+      // attempted in case of a batch.
       //
       if (!SQL_SUCCEEDED (r))
       {
@@ -1096,8 +1182,8 @@ namespace odb
         return n_;
       }
 
-      if (n == 1) // Note: not n_; n and n_ not be the same, see command above.
-        fetch (SQL_SUCCESS); // Non-batch case.
+      if (status_ == 0) // Non-batch case.
+        fetch (SQL_SUCCESS);
       else
         fetch (status_[i_] == SQL_PARAM_SUCCESS ||
                status_[i_] == SQL_PARAM_SUCCESS_WITH_INFO
@@ -1209,7 +1295,7 @@ namespace odb
         }
       }
 
-      // Fetch the row containing the id/version if this statement if
+      // Fetch the row containing the id/version if this statement is
       // returning.
       //
       if (result_ && (returning_id_ || returning_version_))
@@ -1313,12 +1399,15 @@ namespace odb
     update_statement::
     update_statement (connection_type& conn,
                       const string& text,
+                      bool unique,
                       bool process,
                       binding& param,
                       bool returning_version)
-        : statement (conn,
-                     text, statement_update,
-                     (process ? &param : 0), false),
+        : bulk_statement (conn,
+                          text, statement_update,
+                          (process ? &param : 0), false,
+                          param.batch, param.skip, param.status),
+          unique_ (unique),
           returning_version_ (returning_version)
     {
       if (!empty ())
@@ -1333,14 +1422,17 @@ namespace odb
     update_statement::
     update_statement (connection_type& conn,
                       const char* text,
+                      bool unique,
                       bool process,
                       binding& param,
                       bool returning_version,
                       bool copy_text)
-        : statement (conn,
-                     text, statement_update,
-                     (process ? &param : 0), false,
-                     copy_text),
+        : bulk_statement (conn,
+                          text, statement_update,
+                          (process ? &param : 0), false,
+                          param.batch, param.skip, param.status,
+                          copy_text),
+          unique_ (unique),
           returning_version_ (returning_version)
     {
       if (!empty ())
@@ -1367,53 +1459,77 @@ namespace odb
         translate_error (r, conn_, stmt_);
     }
 
-    unsigned long long update_statement::
-    execute ()
+    size_t update_statement::
+    execute (size_t n, multiple_exceptions* mex)
     {
-      SQLRETURN r (statement::execute ());
-
-      // SQL_NO_DATA indicates that the statement hasn't affected any rows.
+      // In batch UPDATE without the OUTPUT clause (which is the
+      // only kind we currently support) all the parameter sets
+      // are processed inside SQLExecute() and the total count of
+      // affected rows is available after it returns.
       //
-      if (r == SQL_NO_DATA)
-        return 0;
+      assert (!returning_version_ || n == 1);
 
-      if (!SQL_SUCCEEDED (r))
-        translate_error (r, conn_, stmt_);
+      SQLRETURN r (bulk_statement::execute (n, mex));
 
-      // Get the number of affected rows.
+      // Statement failed as a whole, assume no parameter sets were
+      // attempted in case of a batch.
       //
-      SQLLEN rows;
-      r = SQLRowCount (stmt_, &rows);
-
-      if (!SQL_SUCCEEDED (r))
-        translate_error (r, conn_, stmt_);
-
-      // Fetch the row containing the version if this statement is
-      // returning. We still need to close the cursor even if we
-      // haven't updated any rows.
-      //
-      if (returning_version_)
+      if (!(SQL_SUCCEEDED (r) || r == SQL_NO_DATA))
       {
-        r = SQLFetch (stmt_);
-
-        if (r != SQL_NO_DATA && !SQL_SUCCEEDED (r))
-          translate_error (r, conn_, stmt_);
-
-        {
-          SQLRETURN r (SQLCloseCursor (stmt_)); // Don't overwrite r.
-
-          if (!SQL_SUCCEEDED (r))
-            translate_error (r, conn_, stmt_);
-        }
-
-        if (rows != 0 && r == SQL_NO_DATA)
-          throw database_exception (
-            0,
-            "?????",
-            "result set expected from a statement with the OUTPUT clause");
+        translate_error (r, conn_, stmt_, 0, mex_);
+        return n_;
       }
 
-      return static_cast<unsigned long long> (rows);
+      // Extract error information for failed parameter sets. If we do
+      // this after calling SQLRowCount(), all the diagnostics records
+      // that we need will be gone.
+      //
+      size_t errors (n_ > 1 ? extract_errors () : 0);
+
+      // Figure out the affected row count.
+      //
+      result_ = affected (r, errors, unique_);
+
+      if (status_ == 0) // Non-batch case.
+      {
+        // Fetch the row containing the version if this statement is
+        // returning. We still need to close the cursor even if we
+        // haven't updated any rows.
+        //
+        if (returning_version_)
+        {
+          r = SQLFetch (stmt_);
+
+          if (r != SQL_NO_DATA && !SQL_SUCCEEDED (r))
+            translate_error (r, conn_, stmt_);
+
+          {
+            SQLRETURN r (SQLCloseCursor (stmt_)); // Don't overwrite r.
+
+            if (!SQL_SUCCEEDED (r))
+              translate_error (r, conn_, stmt_);
+          }
+
+          if (result_ != 0 && r == SQL_NO_DATA)
+            throw database_exception (
+              0,
+              "?????",
+              "result set expected from a statement with the OUTPUT clause");
+        }
+      }
+
+      return n_;
+    }
+
+    unsigned long long update_statement::
+    result (size_t i)
+    {
+      assert ((i_ == i || i_ + 1 == i) && i < n_);
+
+      if (i != i_)
+        mex_->current (++i_); // mex cannot be NULL since this is a batch.
+
+      return result_;
     }
 
     //
@@ -1467,75 +1583,25 @@ namespace odb
       SQLRETURN r (bulk_statement::execute (n, mex));
 
       // Statement failed as a whole, assume no parameter sets were
-      // attempted.
+      // attempted in case of a batch.
       //
       if (!(SQL_SUCCEEDED (r) || r == SQL_NO_DATA))
       {
-        fetch (r);
+        translate_error (r, conn_, stmt_, 0, mex_);
         return n_;
       }
 
-      // Figure out the affected row count. SQL_NO_DATA indicates that
-      // the statement hasn't affected any rows.
+      // Extract error information for failed parameter sets. If we do
+      // this after calling SQLRowCount(), all the diagnostics records
+      // that we need will be gone.
       //
-      if (r == SQL_NO_DATA)
-        result_ = 0;
-      else
-      {
-        SQLLEN rows;
-        r = SQLRowCount (stmt_, &rows);
+      size_t errors (n_ > 1 ? extract_errors () : 0);
 
-        if (!SQL_SUCCEEDED (r))
-          translate_error (r, conn_, stmt_);
-
-        result_ = static_cast<unsigned long long> (rows);
-      }
-
-      cerr << "total: " << result_ << endl;
-
-      if (n_ > 1) // Batch.
-      {
-        if (result_ != 0) // Some rows did get affected.
-        {
-          size_t p (n_);
-
-          // Subtract the parameter sets that failed since they haven't
-          // affected any rows.
-          //
-          for (size_t i (0); i != n_; ++i)
-            if (status_[i] != SQL_PARAM_SUCCESS &&
-                status_[i] != SQL_PARAM_SUCCESS_WITH_INFO)
-              p--;
-
-          if (p > 1) // True batch.
-          {
-            if (unique_) // Each can affect 0 or 1 row.
-            {
-              result_ = (p == static_cast<size_t> (result_)
-                         ? 1
-                         : result_unknown);
-            }
-            else
-              result_ = result_unknown;
-          }
-        }
-      }
-
-      if (n == 1) // n and n_ are really the same here.
-        fetch (SQL_SUCCESS); // Non-batch case.
-      else
-        fetch (status_[i_] == SQL_PARAM_SUCCESS ||
-               status_[i_] == SQL_PARAM_SUCCESS_WITH_INFO
-               ? SQL_SUCCESS : SQL_ERROR);
+      // Figure out the affected row count.
+      //
+      result_ = affected (r, errors, unique_);
 
       return n_;
-    }
-
-    void delete_statement::
-    fetch (SQLRETURN r)
-    {
-      if (!SQL_SUCCEEDED (r))
-        translate_error (r, conn_, stmt_, i_, mex_); // Can return.
     }
 
     unsigned long long delete_statement::
@@ -1544,13 +1610,7 @@ namespace odb
       assert ((i_ == i || i_ + 1 == i) && i < n_);
 
       if (i != i_)
-      {
         mex_->current (++i_); // mex cannot be NULL since this is a batch.
-
-        fetch (status_[i_] == SQL_PARAM_SUCCESS ||
-               status_[i_] == SQL_PARAM_SUCCESS_WITH_INFO
-               ? SQL_SUCCESS : SQL_ERROR);
-      }
 
       return result_;
     }

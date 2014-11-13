@@ -278,7 +278,7 @@ namespace odb
       image_type&
       image (std::size_t i = 0)
       {
-        return image_[i];
+        return images_[i].obj;
       }
 
       // Insert binding.
@@ -323,7 +323,7 @@ namespace odb
       // Object id image and binding.
       //
       id_image_type&
-      id_image (std::size_t i = 0) {return id_image_[i];}
+      id_image (std::size_t i = 0) {return images_[i].id;}
 
       std::size_t
       id_image_version () const {return id_image_version_;}
@@ -388,7 +388,8 @@ namespace odb
             new (details::shared) update_statement_type (
               conn_,
               object_traits::update_statement,
-              object_traits::versioned, // Process if versioned.
+              true,                            // Unique (0 or 1).
+              object_traits::versioned,        // Process if versioned.
               update_image_binding_,
               object_traits::rowversion,
               false));
@@ -434,7 +435,7 @@ namespace odb
       extra_statement_cache ()
       {
         return extra_statement_cache_.get (
-          conn_, image_, id_image_binding_, od_.id_image_binding ());
+          conn_, images_[0].obj, id_image_binding_, od_.id_image_binding ());
       }
 
     public:
@@ -484,7 +485,17 @@ namespace odb
       extra_statement_cache_ptr<extra_statement_cache_type, image_type>
       extra_statement_cache_;
 
-      image_type image_[object_traits::batch];
+      // The UPDATE statement uses both the object and id image. Keep
+      // them next to each other so that the same skip distance can
+      // be used in batch binding.
+      //
+      struct images
+      {
+        image_type obj;
+        id_image_type id;
+      };
+
+      images images_[object_traits::batch];
       SQLUSMALLINT status_[object_traits::batch];
 
       // Select binding.
@@ -517,7 +528,6 @@ namespace odb
       // Id image binding (only used as a parameter or in OUTPUT for
       // auto id and version). Uses the suffix in the update bind.
       //
-      id_image_type id_image_[object_traits::batch];
       std::size_t id_image_version_;
       binding id_image_binding_;
 

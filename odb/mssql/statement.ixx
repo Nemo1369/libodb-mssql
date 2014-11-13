@@ -18,7 +18,7 @@ namespace odb
         : statement (c, text, k, process, optimize),
           status_ (batch == 1 ? 0 : status)
     {
-      if (batch != 1)
+      if (batch != 1 && !empty ())
         init (skip);
     }
 
@@ -35,7 +35,7 @@ namespace odb
         : statement (c, text, k, process, optimize, copy_text),
           status_ (batch == 1 ? 0 : status)
     {
-      if (batch != 1)
+      if (batch != 1 && !empty ())
         init (skip);
     }
 

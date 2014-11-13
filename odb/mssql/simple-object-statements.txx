@@ -46,28 +46,32 @@ namespace odb
           insert_image_binding_ (insert_image_bind_,
                                  insert_column_count,
                                  object_traits::batch,
-                                 sizeof (image_type),
+                                 sizeof (images),
                                  status_),
           update_image_binding_ (update_image_bind_,
                                  update_column_count + id_column_count +
-                                 managed_optimistic_column_count),
+                                 managed_optimistic_column_count,
+                                 object_traits::batch,
+                                 sizeof (images),
+                                 status_),
           id_image_binding_ (update_image_bind_ + update_column_count,
                              id_column_count,
                              object_traits::batch,
-                             sizeof (id_image_type),
+                             sizeof (images),
                              status_),
           od_ (update_image_bind_ + update_column_count)
     {
-      image_[0].version = 0; // @@ TODO [0]
+      images_[0].obj.version = 0; // @@ TODO [0]
+      images_[0].id.version = 0;  // @@ TODO
+
       select_image_version_ = 0;
       insert_image_version_ = 0;
       update_image_version_ = 0;
       update_id_image_version_ = 0;
-
-      id_image_[0].version = 0; // @@ TODO
       id_image_version_ = 0;
 
-      select_image_binding_.change_callback = image_[0].change_callback ();
+      select_image_binding_.change_callback =
+        images_[0].obj.change_callback ();
 
       std::memset (insert_image_bind_, 0, sizeof (insert_image_bind_));
       std::memset (update_image_bind_, 0, sizeof (update_image_bind_));

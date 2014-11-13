@@ -191,7 +191,7 @@ namespace odb
               break;
           else if (SQL_SUCCEEDED (r) &&
                    n != SQL_NO_ROW_NUMBER &&
-                   n == SQL_ROW_NUMBER_UNKNOWN &&
+                   n != SQL_ROW_NUMBER_UNKNOWN &&
                    n != static_cast<SQLLEN> (pos + 1)) // 1-based
             continue;
         }
@@ -236,6 +236,8 @@ namespace odb
                                  &n,
                                  0,
                                  0);
+
+            cerr << i << " ";
 
             // check error
             if (n == SQL_NO_ROW_NUMBER)
