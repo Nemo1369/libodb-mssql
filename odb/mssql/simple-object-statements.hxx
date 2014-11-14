@@ -39,49 +39,56 @@ namespace odb
     // deleter function which will be initialized during allocation
     // (at that point we know that the cache class is defined).
     //
-    template <typename T, typename I>
+    template <typename T, typename I, typename ID>
     struct extra_statement_cache_ptr
     {
       typedef I image_type;
+      typedef ID id_image_type;
       typedef mssql::connection connection_type;
 
       extra_statement_cache_ptr (): p_ (0) {}
       ~extra_statement_cache_ptr ()
       {
         if (p_ != 0)
-          (this->*deleter_) (0, 0, 0, 0);
+          (this->*deleter_) (0, 0, 0, 0, 0);
       }
 
       T&
-      get (connection_type& c, image_type& im, binding& id, binding* idv)
+      get (connection_type& c,
+           image_type& im, id_image_type& idim,
+           binding& id, binding* idv)
       {
         if (p_ == 0)
-          allocate (&c, &im, &id, (idv != 0 ? idv : &id));
+          allocate (&c, &im, &idim, &id, (idv != 0 ? idv : &id));
 
         return *p_;
       }
 
     private:
       void
-      allocate (connection_type*, image_type*, binding*, binding*);
+      allocate (connection_type*,
+                image_type*, id_image_type*,
+                binding*, binding*);
 
     private:
       T* p_;
       void (extra_statement_cache_ptr::*deleter_) (
-        connection_type*, image_type*, binding*, binding*);
+        connection_type*, image_type*, id_image_type*, binding*, binding*);
     };
 
-    template <typename T, typename I>
-    void extra_statement_cache_ptr<T, I>::
-    allocate (connection_type* c, image_type* im, binding* id, binding* idv)
+    template <typename T, typename I, typename ID>
+    void extra_statement_cache_ptr<T, I, ID>::
+    allocate (connection_type* c,
+              image_type* im, id_image_type* idim,
+              binding* id, binding* idv)
     {
       // To reduce object code size, this function acts as both allocator
       // and deleter.
       //
       if (p_ == 0)
       {
-        p_ = new T (*c, *im, *id, *idv);
-        deleter_ = &extra_statement_cache_ptr<T, I>::allocate;
+        p_ = new T (*c, *im, *idim, *id, *idv);
+        deleter_ = &extra_statement_cache_ptr<T, I, ID>::allocate;
       }
       else
         delete p_;
@@ -339,7 +346,7 @@ namespace odb
       // at the same time.
       //
       binding&
-      optimistic_id_image_binding () {return od_.id_image_binding_;}
+      optimistic_id_image_binding () {return *od_.id_image_binding ();}
 
       // Statements.
       //
@@ -355,9 +362,9 @@ namespace odb
               insert_image_binding_,
               object_traits::auto_id,
               object_traits::rowversion,
-              (object_traits::auto_id || object_traits::rowversion
-               ? &id_image_binding_
-               : 0),
+              (object_traits::rowversion
+               ? &optimistic_id_image_binding ()
+               : (object_traits::auto_id ? &id_image_binding () : 0)),
               false));
 
         return *persist_;
@@ -391,7 +398,7 @@ namespace odb
               true,                            // Unique (0 or 1).
               object_traits::versioned,        // Process if versioned.
               update_image_binding_,
-              object_traits::rowversion,
+              object_traits::rowversion ? &optimistic_id_image_binding () : 0,
               false));
 
         return *update_;
@@ -405,8 +412,8 @@ namespace odb
             new (details::shared) delete_statement_type (
               conn_,
               object_traits::erase_statement,
-              id_image_binding_,
               true, // Unique (0 or 1 affected rows).
+              id_image_binding_,
               false));
 
         return *erase_;
@@ -422,7 +429,6 @@ namespace odb
               conn_,
               object_traits::optimistic_erase_statement,
               od_.id_image_binding_,
-              true, // Unique (0 or 1 affected rows).
               false));
         }
 
@@ -435,7 +441,9 @@ namespace odb
       extra_statement_cache ()
       {
         return extra_statement_cache_.get (
-          conn_, images_[0].obj, id_image_binding_, od_.id_image_binding ());
+          conn_,
+          images_[0].obj, images_[0].id,
+          id_image_binding_, od_.id_image_binding ());
       }
 
     public:
@@ -482,8 +490,9 @@ namespace odb
       template <typename T1>
       friend class polymorphic_derived_object_statements;
 
-      extra_statement_cache_ptr<extra_statement_cache_type, image_type>
-      extra_statement_cache_;
+      extra_statement_cache_ptr<extra_statement_cache_type,
+                                image_type,
+                                id_image_type> extra_statement_cache_;
 
       // The UPDATE statement uses both the object and id image. Keep
       // them next to each other so that the same skip distance can

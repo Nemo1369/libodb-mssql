@@ -319,13 +319,20 @@ namespace odb
       // Return the number of parameter sets (out of n) that were attempted.
       //
       std::size_t
-      execute (std::size_t n = 1, multiple_exceptions* = 0);
+      execute (std::size_t n, multiple_exceptions*);
 
       // Return true if successful and false if this row is a duplicate.
       // All other errors are reported by throwing exceptions.
       //
       bool
-      result (std::size_t i = 0);
+      result (std::size_t i);
+
+      bool
+      execute ()
+      {
+        execute (1, 0);
+        return result (0);
+      }
 
     private:
       insert_statement (const insert_statement&);
@@ -371,23 +378,36 @@ namespace odb
       //
       update_statement (connection_type& conn,
                         const std::string& text,
+                        bool process,
+                        binding& param,
+                        binding* returning);
+
+      update_statement (connection_type& conn,
+                        const std::string& text,
                         bool unique_hint,
                         bool process,
                         binding& param,
-                        bool returning_version);
+                        binding* returning);
+
+      update_statement (connection_type& conn,
+                        const char* text,
+                        bool process,
+                        binding& param,
+                        binding* returning,
+                        bool copy_text = true);
 
       update_statement (connection_type& conn,
                         const char* text,
                         bool unique_hint,
                         bool process,
                         binding& param,
-                        bool returning_version,
+                        binding* returning,
                         bool copy_text = true);
 
       // Return the number of parameter sets (out of n) that were attempted.
       //
       std::size_t
-      execute (std::size_t n = 1, multiple_exceptions* = 0);
+      execute (std::size_t n, multiple_exceptions*);
 
       // Return the number of rows affected (deleted) by the parameter
       // set. If this is a batch (n > 1 in execute() call above) and it
@@ -398,13 +418,14 @@ namespace odb
       using bulk_statement::result_unknown;
 
       unsigned long long
-      result (std::size_t i = 0);
+      result (std::size_t i);
 
-      // Note that currently the implementation does not support batch
-      // with the OUTPUT clause.
-      //
       unsigned long long
-      version ();
+      execute ()
+      {
+        execute (1, 0);
+        return result (0);
+      }
 
     private:
       update_statement (const update_statement&);
@@ -412,16 +433,13 @@ namespace odb
 
     private:
       void
-      init_result ();
+      init (binding& param, binding* ret);
 
     private:
       bool unique_;
-      bool returning_version_;
+      bool returning_;
 
       unsigned long long result_;
-
-      unsigned char version_[8];
-      SQLLEN version_size_ind_;
     };
 
     class LIBODB_MSSQL_EXPORT delete_statement: public bulk_statement
@@ -449,19 +467,28 @@ namespace odb
       //
       delete_statement (connection_type& conn,
                         const std::string& text,
-                        binding& param,
-                        bool unique_hint = false);
+                        binding& param);
+
+      delete_statement (connection_type& conn,
+                        const std::string& text,
+                        bool unique_hint,
+                        binding& param);
 
       delete_statement (connection_type& conn,
                         const char* text,
                         binding& param,
-                        bool unique_hint = false,
+                        bool copy_text = true);
+
+      delete_statement (connection_type& conn,
+                        const char* text,
+                        bool unique_hint,
+                        binding& param,
                         bool copy_text = true);
 
       // Return the number of parameter sets (out of n) that were attempted.
       //
       std::size_t
-      execute (std::size_t n = 1, multiple_exceptions* = 0);
+      execute (std::size_t n, multiple_exceptions*);
 
       // Return the number of rows affected (deleted) by the parameter
       // set. If this is a batch (n > 1 in execute() call above) and it
@@ -472,7 +499,14 @@ namespace odb
       using bulk_statement::result_unknown;
 
       unsigned long long
-      result (std::size_t i = 0);
+      result (std::size_t i);
+
+      unsigned long long
+      execute ()
+      {
+        execute (1, 0);
+        return result (0);
+      }
 
     private:
       delete_statement (const delete_statement&);

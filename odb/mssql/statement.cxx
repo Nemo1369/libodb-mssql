@@ -2,7 +2,7 @@
 // copyright : Copyright (c) 2005-2013 Code Synthesis Tools CC
 // license   : ODB NCUEL; see accompanying LICENSE file
 
-#include <cstring> // std::strlen, std::strstr
+#include <cstring> // std::strlen, std::strstr, std::memset
 #include <cassert>
 #include <iostream>
 
@@ -782,6 +782,44 @@ namespace odb
       SQLRETURN r (statement::execute ());
       bool ok (SQL_SUCCEEDED (r) || r == SQL_NO_DATA);
 
+      //cerr << "processed: " << processed_ << endl;
+
+      // If we have a batch of 1 parameter set, SQL Server ODBC driver
+      // returns the error via SQLExecute() rather than via the status
+      // array even if we set all the attributes necessary for row-wise
+      // binding. So what we are going to do here is convert this case
+      // to the batch way of reporting errors (not that we also check
+      // processed_ so that we only do this is the parameter set was
+      // actually attempted).
+      //
+      if (!ok && status_ != 0 && n == 1 && processed_ == 1)
+      {
+        status_[0] = SQL_PARAM_ERROR;
+        r = SQL_SUCCESS;
+        ok = true;
+      }
+
+      /*
+        for (unsigned i (0); i != processed_; ++i)
+        {
+          cerr << "[" << i << "] " << status_[i] << " ";
+
+          if (status_[i] == SQL_PARAM_ERROR)
+            cerr << "error ";
+          else if (status_[i] == SQL_PARAM_SUCCESS ||
+                   status_[i] == SQL_PARAM_SUCCESS_WITH_INFO)
+            cerr << "ok";
+          else if (status_[i] == SQL_PARAM_UNUSED)
+            cerr << "unused";
+          else if (status_[i] == SQL_PARAM_DIAG_UNAVAILABLE)
+            cerr << "unavailable";
+          else
+            cerr << "?";
+
+          cerr << endl;
+          }
+      */
+
       // If the statement failed as a whole, assume no parameter sets
       // were attempted in case of a batch. Otherwise, the documentation
       // says that the native client driver keeps processing remaining
@@ -802,27 +840,6 @@ namespace odb
           mex_->fatal (true); // An incomplete batch is always fatal.
 
         return r;
-      }
-
-      cerr << "processed: " << processed_ << endl;
-
-      for (unsigned i (0); i != processed_; ++i)
-      {
-        cerr << "[" << i << "] " << status_[i] << " ";
-
-        if (status_[i] == SQL_PARAM_ERROR)
-          cerr << "error ";
-        else if (status_[i] == SQL_PARAM_SUCCESS ||
-                 status_[i] == SQL_PARAM_SUCCESS_WITH_INFO)
-          cerr << "ok";
-        else if (status_[i] == SQL_PARAM_UNUSED)
-          cerr << "unused";
-        else if (status_[i] == SQL_PARAM_DIAG_UNAVAILABLE)
-          cerr << "unavailable";
-        else
-          cerr << "?";
-
-        cerr << endl;
       }
 
       return r;
@@ -861,13 +878,15 @@ namespace odb
         if (!SQL_SUCCEEDED (r))
           translate_error (r, conn_, stmt_);
 
+        //cerr << "raw total: " << n << endl;
+
         // If all the parameter sets failed, then the returned count is -1,
         // which means "not available" according to the documentation.
         //
         rows = (n != -1 ? static_cast<unsigned long long> (n) : 0);
       }
 
-      cerr << "total: " << rows << endl;
+      //cerr << "total: " << rows << endl;
 
       if (n_ > 1) // Batch.
       {
@@ -1094,8 +1113,8 @@ namespace odb
       // for one of the inserted columns is supplied at execution
       // (long data).
       //
-      text_batch_ = strstr (text_, "OUTPUT INSERTED.") == 0 &&
-        strstr (text_, "output inserted.") == 0;
+      text_batch_ = (strstr (text_, "OUTPUT INSERTED.") == 0 &&
+                     strstr (text_, "output inserted.") == 0);
 
       SQLRETURN r;
       SQLUSMALLINT col (1);
@@ -1236,6 +1255,7 @@ namespace odb
               else if (!SQL_SUCCEEDED (r))
                 continue;
 
+              /*
               // check error
               if (n == SQL_NO_ROW_NUMBER)
                 cerr << "not associated with any row" << endl;
@@ -1243,6 +1263,7 @@ namespace odb
                 cerr << "unable to determine row association" << endl;
               else
                 cerr << "associated with " << n << endl;
+              */
 
               if (n == SQL_NO_ROW_NUMBER ||
                   n == SQL_ROW_NUMBER_UNKNOWN ||
@@ -1291,7 +1312,7 @@ namespace odb
         if (result_)
         {
           translate_error (r, conn_, stmt_, i_, mex_); // Can return.
-          result_ = false; // Prevent id/version extraction below.
+          result_ = false; // Prevent id/version extraction below or.
         }
       }
 
@@ -1320,7 +1341,8 @@ namespace odb
         if (r != SQL_NO_DATA && !SQL_SUCCEEDED (r))
           translate_error (r, conn_, stmt_);
 
-        cerr << "fetch [" << i_ << "] " << status_[i_] << " " << endl;
+        //if (status_ != 0)
+        //  cerr << "fetch [" << i_ << "] " << status_[i_] << " " << endl;
 
         if (r == SQL_NO_DATA)
           throw database_exception (
@@ -1376,7 +1398,12 @@ namespace odb
       //
       if ((returning_id_ || returning_version_) && i_ + 1 == n_)
       {
-        r = SQLCloseCursor (stmt_);
+        // Use SQLFreeStmt(SQL_CLOSE) instead of SQLCloseCursor() to avoid
+        // an error if a cursor is not open. This seem to happen if the
+        // statement failure was translated to a parameter set failure in
+        // bulk_statement for batches of one.
+        //
+        r = SQLFreeStmt (stmt_, SQL_CLOSE);
 
         if (!SQL_SUCCEEDED (r))
           translate_error (r, conn_, stmt_);
@@ -1399,24 +1426,54 @@ namespace odb
     update_statement::
     update_statement (connection_type& conn,
                       const string& text,
+                      bool process,
+                      binding& param,
+                      binding* returning)
+        : bulk_statement (conn,
+                          text, statement_update,
+                          (process ? &param : 0), false,
+                          param.batch, param.skip, param.status),
+          unique_ (false),
+          returning_ (returning != 0)
+    {
+      assert (param.batch == 1); // Specify unique_hint explicitly.
+      init (param, returning);
+    }
+
+    update_statement::
+    update_statement (connection_type& conn,
+                      const string& text,
                       bool unique,
                       bool process,
                       binding& param,
-                      bool returning_version)
+                      binding* returning)
         : bulk_statement (conn,
                           text, statement_update,
                           (process ? &param : 0), false,
                           param.batch, param.skip, param.status),
           unique_ (unique),
-          returning_version_ (returning_version)
+          returning_ (returning != 0)
     {
-      if (!empty ())
-      {
-        bind_param (param.bind, param.count);
+      init (param, returning);
+    }
 
-        if (returning_version_)
-          init_result ();
-      }
+    update_statement::
+    update_statement (connection_type& conn,
+                      const char* text,
+                      bool process,
+                      binding& param,
+                      binding* returning,
+                      bool copy_text)
+        : bulk_statement (conn,
+                          text, statement_update,
+                          (process ? &param : 0), false,
+                          param.batch, param.skip, param.status,
+                          copy_text),
+          unique_ (false),
+          returning_ (returning != 0)
+    {
+      assert (param.batch == 1); // Specify unique_hint explicitly.
+      init (param, returning);
     }
 
     update_statement::
@@ -1425,7 +1482,7 @@ namespace odb
                       bool unique,
                       bool process,
                       binding& param,
-                      bool returning_version,
+                      binding* returning,
                       bool copy_text)
         : bulk_statement (conn,
                           text, statement_update,
@@ -1433,30 +1490,33 @@ namespace odb
                           param.batch, param.skip, param.status,
                           copy_text),
           unique_ (unique),
-          returning_version_ (returning_version)
+          returning_ (returning != 0)
+    {
+      init (param, returning);
+    }
+
+    void update_statement::
+    init (binding& param, binding* ret)
     {
       if (!empty ())
       {
         bind_param (param.bind, param.count);
 
-        if (returning_version_)
-          init_result ();
+        if (ret != 0)
+        {
+          bind& b (ret->bind[ret->count - 1]); // Version is the last element.
+
+          SQLRETURN r (SQLBindCol (stmt_,
+                                   1,
+                                   c_type_lookup[b.type],
+                                   (SQLPOINTER) b.buffer,
+                                   capacity_lookup[b.type],
+                                   b.size_ind));
+
+          if (!SQL_SUCCEEDED (r))
+            translate_error (r, conn_, stmt_);
+        }
       }
-    }
-
-    void update_statement::
-    init_result ()
-    {
-      SQLRETURN r (
-        SQLBindCol (stmt_,
-                    1,
-                    SQL_C_BINARY,
-                    (SQLPOINTER) &version_,
-                    sizeof (version_),
-                    &version_size_ind_));
-
-      if (!SQL_SUCCEEDED (r))
-        translate_error (r, conn_, stmt_);
     }
 
     size_t update_statement::
@@ -1467,7 +1527,7 @@ namespace odb
       // are processed inside SQLExecute() and the total count of
       // affected rows is available after it returns.
       //
-      assert (!returning_version_ || n == 1);
+      assert (!returning_ || status_ == 0);
 
       SQLRETURN r (bulk_statement::execute (n, mex));
 
@@ -1480,28 +1540,23 @@ namespace odb
         return n_;
       }
 
-      // Extract error information for failed parameter sets. If we do
-      // this after calling SQLRowCount(), all the diagnostics records
-      // that we need will be gone.
-      //
-      size_t errors (n_ > 1 ? extract_errors () : 0);
-
-      // Figure out the affected row count.
-      //
-      result_ = affected (r, errors, unique_);
-
       if (status_ == 0) // Non-batch case.
       {
-        // Fetch the row containing the version if this statement is
+        // Fetch the row containing the data if this statement is
         // returning. We still need to close the cursor even if we
         // haven't updated any rows.
         //
-        if (returning_version_)
+        if (returning_)
         {
           r = SQLFetch (stmt_);
 
           if (r != SQL_NO_DATA && !SQL_SUCCEEDED (r))
             translate_error (r, conn_, stmt_);
+
+          // We have to get the result after fetching the OUTPUT data
+          // but before closing the cursor.
+          //
+          result_ = affected (SQL_SUCCESS, 0, unique_);
 
           {
             SQLRETURN r (SQLCloseCursor (stmt_)); // Don't overwrite r.
@@ -1516,6 +1571,20 @@ namespace odb
               "?????",
               "result set expected from a statement with the OUTPUT clause");
         }
+        else
+          result_ = affected (r, 0, unique_);
+      }
+      else
+      {
+        // Extract error information for failed parameter sets. If we do
+        // this after calling SQLRowCount(), all the diagnostics records
+        // that we need will be gone.
+        //
+        size_t errors (extract_errors ());
+
+        // Figure out the affected row count.
+        //
+        result_ = affected (r, errors, unique_);
       }
 
       return n_;
@@ -1544,8 +1613,22 @@ namespace odb
     delete_statement::
     delete_statement (connection_type& conn,
                       const string& text,
-                      binding& param,
-                      bool unique)
+                      binding& param)
+        : bulk_statement (conn,
+                          text, statement_delete,
+                          0, false,
+                          param.batch, param.skip, param.status),
+          unique_ (false)
+    {
+      assert (param.batch == 1); // Specify unique_hint explicitly.
+      bind_param (param.bind, param.count);
+    }
+
+    delete_statement::
+    delete_statement (connection_type& conn,
+                      const string& text,
+                      bool unique,
+                      binding& param)
         : bulk_statement (conn,
                           text, statement_delete,
                           0, false,
@@ -1559,7 +1642,23 @@ namespace odb
     delete_statement (connection_type& conn,
                       const char* text,
                       binding& param,
+                      bool copy_text)
+        : bulk_statement (conn,
+                          text, statement_delete,
+                          0, false,
+                          param.batch, param.skip, param.status,
+                          copy_text),
+          unique_ (false)
+    {
+      assert (param.batch == 1); // Specify unique_hint explicitly.
+      bind_param (param.bind, param.count);
+    }
+
+    delete_statement::
+    delete_statement (connection_type& conn,
+                      const char* text,
                       bool unique,
+                      binding& param,
                       bool copy_text)
         : bulk_statement (conn,
                           text, statement_delete,
@@ -1595,7 +1694,7 @@ namespace odb
       // this after calling SQLRowCount(), all the diagnostics records
       // that we need will be gone.
       //
-      size_t errors (n_ > 1 ? extract_errors () : 0);
+      size_t errors (status_ != 0 ? extract_errors () : 0);
 
       // Figure out the affected row count.
       //

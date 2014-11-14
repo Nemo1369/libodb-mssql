@@ -237,7 +237,7 @@ namespace odb
                                  0,
                                  0);
 
-            cerr << i << " ";
+            cerr << i << " " << sqlstate << " ";
 
             // check error
             if (n == SQL_NO_ROW_NUMBER)
