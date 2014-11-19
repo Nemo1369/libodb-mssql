@@ -2,7 +2,7 @@
 // copyright : Copyright (c) 2005-2013 Code Synthesis Tools CC
 // license   : ODB NCUEL; see accompanying LICENSE file
 
-#include <cstring> // std::strlen, std::strstr, std::memset
+#include <cstring> // std::strlen, std::strstr, std::memset, std::memcpy
 #include <cassert>
 #include <iostream> //@@ tmp
 
@@ -1073,12 +1073,14 @@ namespace odb
                           text, statement_insert,
                           (process ? &param : 0), false,
                           param.batch, param.skip, param.status),
-          returning_id_ (returning_id), returning_version_ (returning_version)
+          returning_id_ (returning_id),
+          returning_version_ (returning_version),
+          ret_ (returning)
     {
       bind_param (param.bind, param.count);
 
-      if (returning_id_ || returning_version_)
-        init_result (*returning);
+      if (ret_ != 0)
+        init_result ();
     }
 
     insert_statement::
@@ -1095,16 +1097,26 @@ namespace odb
                           (process ? &param : 0), false,
                           param.batch, param.skip, param.status,
                           copy_text),
-          returning_id_ (returning_id), returning_version_ (returning_version)
+          returning_id_ (returning_id),
+          returning_version_ (returning_version),
+          ret_ (returning)
     {
       bind_param (param.bind, param.count);
 
-      if (returning_id_ || returning_version_)
-        init_result (*returning);
+      if (ret_ != 0)
+        init_result ();
+    }
+
+    template <typename T>
+    inline T*
+    offset (T* base, size_t count, size_t size)
+    {
+      return reinterpret_cast<T*> (
+        reinterpret_cast<char*> (base) + count * size);
     }
 
     void insert_statement::
-    init_result (binding& ret)
+    init_result ()
     {
       // Figure out if we are using the OUTPUT clause or a batch of
       // INSERT and SELECT statements. The latter is used to work
@@ -1116,19 +1128,36 @@ namespace odb
       text_batch_ = (strstr (text_, "OUTPUT INSERTED.") == 0 &&
                      strstr (text_, "output inserted.") == 0);
 
+      // It might seem logical to set up the array of results if this is a
+      // batch (i.e., the SQL_ATTR_ROW_BIND_TYPE, SQL_ATTR_ROW_ARRAY_SIZE).
+      // This won't work because what we are getting is multiple result
+      // sets (each containing a single row) and not multiple rows. As a
+      // result, the SQL Server ODBC driver will always store the data in
+      // the first element of our array. A bit counter-intuitive.
+      //
+      // At the same time it would be conceptually cleaner to have the
+      // returned data extracted into the batch array instead of always
+      // the first element. This is also how other database runtimes (e.g.,
+      // Oracle) behave. So what we are going to do here is emulate this
+      // by making the ODBC driver store the data into the last element
+      // of the batch array and then copying it into the right place
+      // after processing each result set (see fetch() below).
+      //
       SQLRETURN r;
       SQLUSMALLINT col (1);
 
+      size_t last (ret_->batch - 1);
+
       if (returning_id_)
       {
-        bind& b (ret.bind[0]); // Auto id is the first element.
+        bind& b (ret_->bind[0]); // Auto id is the first element.
 
         r = SQLBindCol (stmt_,
                         col++,
                         c_type_lookup[b.type],
-                        (SQLPOINTER) b.buffer,
+                        (SQLPOINTER) offset (b.buffer, last, ret_->skip),
                         capacity_lookup[b.type],
-                        b.size_ind);
+                        offset (b.size_ind, last, ret_->skip));
 
         if (!SQL_SUCCEEDED (r))
           translate_error (r, conn_, stmt_);
@@ -1136,25 +1165,18 @@ namespace odb
 
       if (returning_version_)
       {
-        bind& b (ret.bind[ret.count - 1]); // Version is the last element.
+        bind& b (ret_->bind[ret_->count - 1]); // Version is the last element.
 
         r = SQLBindCol (stmt_,
                         col++,
                         c_type_lookup[b.type],
-                        (SQLPOINTER) b.buffer,
+                        (SQLPOINTER) offset (b.buffer, last, ret_->skip),
                         capacity_lookup[b.type],
-                        b.size_ind);
+                        offset (b.size_ind, last, ret_->skip));
 
         if (!SQL_SUCCEEDED (r))
           translate_error (r, conn_, stmt_);
       }
-
-      // It might seem logical to set up the array of results if this is a
-      // batch (i.e., the SQL_ATTR_ROW_BIND_TYPE, SQL_ATTR_ROW_ARRAY_SIZE).
-      // This won't work because what we are getting is multiple result
-      // sets (each containing a single row) and not multiple rows. As a
-      // result, the SQL Server ODBC driver will always store the data in
-      // the first element of our array. A bit counter-intuitive.
     }
 
     size_t insert_statement::
@@ -1319,7 +1341,7 @@ namespace odb
       // Fetch the row containing the id/version if this statement is
       // returning.
       //
-      if (result_ && (returning_id_ || returning_version_))
+      if (result_ && ret_ != 0)
       {
         if (text_batch_)
         {
@@ -1349,6 +1371,38 @@ namespace odb
             0,
             "?????",
             "result set expected from a statement with the OUTPUT clause");
+
+        // See init_result() for details on what's going here.
+        //
+        size_t last (ret_->batch - 1);
+        if (i_ != last)
+        {
+          if (returning_id_)
+          {
+            bind& b (ret_->bind[0]); // Auto id is the first element.
+
+            memcpy (offset (b.buffer, i_, ret_->skip),
+                    offset (b.buffer, last, ret_->skip),
+                    capacity_lookup[b.type]);
+
+            memcpy (offset (b.size_ind, i_, ret_->skip),
+                    offset (b.size_ind, last, ret_->skip),
+                    sizeof (*b.size_ind));
+          }
+
+          if (returning_version_)
+          {
+            bind& b (ret_->bind[ret_->count - 1]); // Version is the last.
+
+            memcpy (offset (b.buffer, i_, ret_->skip),
+                    offset (b.buffer, last, ret_->skip),
+                    capacity_lookup[b.type]);
+
+            memcpy (offset (b.size_ind, i_, ret_->skip),
+                    offset (b.size_ind, last, ret_->skip),
+                    sizeof (*b.size_ind));
+          }
+        }
       }
     }
 
@@ -1367,7 +1421,7 @@ namespace odb
 
         // Only in case of the OUTPUT clause do we have multiple result sets.
         //
-        if (returning_id_ || returning_version_)
+        if (ret_ != 0)
         {
           r = SQLMoreResults (stmt_);
 
@@ -1396,7 +1450,7 @@ namespace odb
 
       // Close the cursor if we are done.
       //
-      if ((returning_id_ || returning_version_) && i_ + 1 == n_)
+      if (ret_ != 0 && i_ + 1 == n_)
       {
         // Use SQLFreeStmt(SQL_CLOSE) instead of SQLCloseCursor() to avoid
         // an error if a cursor is not open. This seem to happen if the

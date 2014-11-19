@@ -319,7 +319,10 @@ namespace odb
       // Return the number of parameter sets (out of n) that were attempted.
       //
       std::size_t
-      execute (std::size_t n, multiple_exceptions*);
+      execute (std::size_t n, multiple_exceptions& mex)
+      {
+        return execute (n, &mex);
+      }
 
       // Return true if successful and false if this row is a duplicate.
       // All other errors are reported by throwing exceptions.
@@ -340,7 +343,10 @@ namespace odb
 
     private:
       void
-      init_result (binding&);
+      init_result ();
+
+      std::size_t
+      execute (std::size_t, multiple_exceptions*);
 
       void
       fetch (SQLRETURN);
@@ -348,6 +354,7 @@ namespace odb
     private:
       bool returning_id_;
       bool returning_version_;
+      binding* ret_;
       bool text_batch_;
 
       bool result_;
@@ -407,7 +414,10 @@ namespace odb
       // Return the number of parameter sets (out of n) that were attempted.
       //
       std::size_t
-      execute (std::size_t n, multiple_exceptions*);
+      execute (std::size_t n, multiple_exceptions& mex)
+      {
+        return execute (n, &mex);
+      }
 
       // Return the number of rows affected (deleted) by the parameter
       // set. If this is a batch (n > 1 in execute() call above) and it
@@ -434,6 +444,9 @@ namespace odb
     private:
       void
       init (binding& param, binding* ret);
+
+      std::size_t
+      execute (std::size_t, multiple_exceptions*);
 
     private:
       bool unique_;
@@ -488,7 +501,10 @@ namespace odb
       // Return the number of parameter sets (out of n) that were attempted.
       //
       std::size_t
-      execute (std::size_t n, multiple_exceptions*);
+      execute (std::size_t n, multiple_exceptions& mex)
+      {
+        return execute (n, &mex);
+      }
 
       // Return the number of rows affected (deleted) by the parameter
       // set. If this is a batch (n > 1 in execute() call above) and it
@@ -511,6 +527,10 @@ namespace odb
     private:
       delete_statement (const delete_statement&);
       delete_statement& operator= (const delete_statement&);
+
+    private:
+      std::size_t
+      execute (std::size_t, multiple_exceptions*);
 
     private:
       bool unique_;

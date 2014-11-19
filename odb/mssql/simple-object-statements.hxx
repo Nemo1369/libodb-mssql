@@ -162,7 +162,7 @@ namespace odb
       typedef T object_type;
       typedef object_traits_impl<object_type, id_mssql> object_traits;
 
-      optimistic_data (bind*);
+      optimistic_data (bind*, std::size_t skip, SQLUSMALLINT* status);
 
       binding*
       id_image_binding () {return &id_image_binding_;}
@@ -177,7 +177,7 @@ namespace odb
     template <typename T>
     struct optimistic_data<T, false>
     {
-      optimistic_data (bind*) {}
+      optimistic_data (bind*, std::size_t, SQLUSMALLINT*) {}
 
       binding*
       id_image_binding () {return 0;}
