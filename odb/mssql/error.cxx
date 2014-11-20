@@ -3,7 +3,6 @@
 // license   : ODB NCUEL; see accompanying LICENSE file
 
 #include <string>
-#include <iostream> // @@ TMP
 
 #include <odb/mssql/mssql.hxx>
 #include <odb/mssql/error.hxx>
@@ -224,30 +223,6 @@ namespace odb
           }
 
           e.append (native_code, sqlstate, msg);
-
-          //@@ TMP
-          if (htype == SQL_HANDLE_STMT)
-          {
-            SQLLEN n;
-            r = SQLGetDiagField (htype,
-                                 h,
-                                 i,
-                                 SQL_DIAG_ROW_NUMBER,
-                                 &n,
-                                 0,
-                                 0);
-
-            cerr << i << " " << sqlstate << " ";
-
-            // check error
-            if (n == SQL_NO_ROW_NUMBER)
-              cerr << "not associated with any row" << endl;
-            else if (n == SQL_ROW_NUMBER_UNKNOWN)
-              cerr << "unable to determine row association" << endl;
-            else
-              cerr << "associated with " << n << endl;
-          }
-
         }
         else
           e.append (0, "?????", "unable to extract information for this "

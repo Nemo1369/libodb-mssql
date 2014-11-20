@@ -1350,8 +1350,6 @@ namespace odb
             {
               string s (sqlstate);
 
-              cerr << s << endl;
-
               if (s == "23000")      // Integrity contraint violation.
                 cv = true;
               else if (s != "01000") // General warning.
@@ -1471,10 +1469,12 @@ namespace odb
           //
           mex_->attempted (processed_);
 
+          /*
           cerr << "more [" << (i_) << "] " << status_[i_] << " "
                << SQL_SUCCEEDED (r) << endl;
 
           cerr << "more processed: " << processed_ << endl;
+          */
 
           if (r == SQL_NO_DATA)
           {
