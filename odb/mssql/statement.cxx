@@ -999,23 +999,58 @@ namespace odb
     {
       SQLRETURN r (statement::execute ());
 
+      // Skip empty result sets that seem to be added as a result of
+      // executing DML statements in stored procedures (e.g., INSERT
+      // INTO EXEC).
+      //
+      if (r == SQL_NO_DATA)
+      {
+        r = SQLMoreResults (stmt_);
+
+        if (r == SQL_NO_DATA)
+        {
+          throw database_exception (
+            0,
+            "?????",
+            "another result set expected after SQL_NO_DATA");
+        }
+      }
+
       if (!SQL_SUCCEEDED (r))
         translate_error (r, conn_, stmt_);
 
-#ifndef NDEBUG
-      SQLSMALLINT cols;
-      r = SQLNumResultCols (stmt_, &cols);
+      // Skip result sets that have no columns. These seem to be added
+      // by DML statements that don't produce any result (e.g., EXEC).
+      //
+      for (columns_ = 0; columns_ == 0;)
+      {
+        {
+          SQLSMALLINT c;
+          r = SQLNumResultCols (stmt_, &c);
 
-      if (!SQL_SUCCEEDED (r))
-        translate_error (r, conn_, stmt_);
+          if (!SQL_SUCCEEDED (r))
+            translate_error (r, conn_, stmt_);
+
+          columns_ = static_cast<SQLUSMALLINT> (c);
+        }
+
+        if (columns_ == 0)
+        {
+          r = SQLMoreResults (stmt_);
+
+          if (r == SQL_NO_DATA)
+            break;
+          else if (!SQL_SUCCEEDED (r))
+            translate_error (r, conn_, stmt_);
+        }
+      }
 
       // Make sure that the number of columns in the result returned by
       // the database matches the number that we expect. A common cause
       // of this assertion is a native view with a number of data members
       // not matching the number of columns in the SELECT-list.
       //
-      assert (static_cast<SQLUSMALLINT> (cols) == result_count_ + long_count_);
-#endif
+      assert (columns_ == result_count_ + long_count_);
     }
 
     select_statement::result select_statement::
@@ -1026,15 +1061,22 @@ namespace odb
       if (cc != 0 && cc->callback != 0)
         (cc->callback) (cc->context);
 
-      SQLRETURN r (SQLFetch (stmt_));
-
-      if (r == SQL_NO_DATA)
+      // Don't bother calling SQLFetch() if there are no columns.
+      //
+      if (columns_ == 0)
         return no_data;
+      else
+      {
+        SQLRETURN r (SQLFetch (stmt_));
 
-      if (!SQL_SUCCEEDED (r))
-        translate_error (r, conn_, stmt_);
+        if (r == SQL_NO_DATA)
+          return no_data;
 
-      return success;
+        if (!SQL_SUCCEEDED (r))
+          translate_error (r, conn_, stmt_);
+
+        return success;
+      }
     }
 
     void select_statement::
