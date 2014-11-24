@@ -4,7 +4,6 @@
 
 #include <cstring> // std::strlen, std::strstr, std::memset, std::memcpy
 #include <cassert>
-#include <iostream> //@@ tmp
 
 #include <odb/tracer.hxx>
 
@@ -782,8 +781,6 @@ namespace odb
       SQLRETURN r (statement::execute ());
       bool ok (SQL_SUCCEEDED (r) || r == SQL_NO_DATA);
 
-      //cerr << "processed: " << processed_ << endl;
-
       // If we have a batch of 1 parameter set, SQL Server ODBC driver
       // returns the error via SQLExecute() rather than via the status
       // array even if we set all the attributes necessary for row-wise
@@ -798,27 +795,6 @@ namespace odb
         r = SQL_SUCCESS;
         ok = true;
       }
-
-      /*
-        for (unsigned i (0); i != processed_; ++i)
-        {
-          cerr << "[" << i << "] " << status_[i] << " ";
-
-          if (status_[i] == SQL_PARAM_ERROR)
-            cerr << "error ";
-          else if (status_[i] == SQL_PARAM_SUCCESS ||
-                   status_[i] == SQL_PARAM_SUCCESS_WITH_INFO)
-            cerr << "ok";
-          else if (status_[i] == SQL_PARAM_UNUSED)
-            cerr << "unused";
-          else if (status_[i] == SQL_PARAM_DIAG_UNAVAILABLE)
-            cerr << "unavailable";
-          else
-            cerr << "?";
-
-          cerr << endl;
-          }
-      */
 
       // If the statement failed as a whole, assume no parameter sets
       // were attempted in case of a batch. Otherwise, the documentation
@@ -878,15 +854,11 @@ namespace odb
         if (!SQL_SUCCEEDED (r))
           translate_error (r, conn_, stmt_);
 
-        //cerr << "raw total: " << n << endl;
-
         // If all the parameter sets failed, then the returned count is -1,
         // which means "not available" according to the documentation.
         //
         rows = (n != -1 ? static_cast<unsigned long long> (n) : 0);
       }
-
-      //cerr << "total: " << rows << endl;
 
       if (n_ > 1) // Batch.
       {
@@ -1319,16 +1291,6 @@ namespace odb
               else if (!SQL_SUCCEEDED (r))
                 continue;
 
-              /*
-              // check error
-              if (n == SQL_NO_ROW_NUMBER)
-                cerr << "not associated with any row" << endl;
-              else if (n == SQL_ROW_NUMBER_UNKNOWN)
-                cerr << "unable to determine row association" << endl;
-              else
-                cerr << "associated with " << n << endl;
-              */
-
               if (n == SQL_NO_ROW_NUMBER ||
                   n == SQL_ROW_NUMBER_UNKNOWN ||
                   n != static_cast<SQLLEN> (i_ + 1)) // 1-based
@@ -1403,9 +1365,6 @@ namespace odb
         if (r != SQL_NO_DATA && !SQL_SUCCEEDED (r))
           translate_error (r, conn_, stmt_);
 
-        //if (status_ != 0)
-        //  cerr << "fetch [" << i_ << "] " << status_[i_] << " " << endl;
-
         if (r == SQL_NO_DATA)
           throw database_exception (
             0,
@@ -1469,13 +1428,6 @@ namespace odb
           //
           mex_->attempted (processed_);
 
-          /*
-          cerr << "more [" << (i_) << "] " << status_[i_] << " "
-               << SQL_SUCCEEDED (r) << endl;
-
-          cerr << "more processed: " << processed_ << endl;
-          */
-
           if (r == SQL_NO_DATA)
           {
             throw database_exception (
@@ -1504,8 +1456,6 @@ namespace odb
         if (!SQL_SUCCEEDED (r))
           translate_error (r, conn_, stmt_);
       }
-
-      //cerr << "result for " << i << " " << result_;
 
       return result_;
     }
