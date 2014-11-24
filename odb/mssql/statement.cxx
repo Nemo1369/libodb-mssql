@@ -1636,17 +1636,6 @@ namespace odb
       return n_;
     }
 
-    unsigned long long update_statement::
-    result (size_t i)
-    {
-      assert ((i_ == i || i_ + 1 == i) && i < n_);
-
-      if (i != i_)
-        mex_->current (++i_); // mex cannot be NULL since this is a batch.
-
-      return result_;
-    }
-
     //
     // delete_statement
     //
@@ -1747,17 +1736,6 @@ namespace odb
       result_ = affected (r, errors, unique_);
 
       return n_;
-    }
-
-    unsigned long long delete_statement::
-    result (size_t i)
-    {
-      assert ((i_ == i || i_ + 1 == i) && i < n_);
-
-      if (i != i_)
-        mex_->current (++i_); // mex cannot be NULL since this is a batch.
-
-      return result_;
     }
   }
 }
